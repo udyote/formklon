@@ -8,6 +8,10 @@ Production (Railway / Render / Heroku) uyumlu.
 - Başlık/Açıklama bölümlerini ve soru açıklamalarını destekler
 - Kalın, italik, altı çizili, link ve liste gibi zengin metin formatlarını korur
 - Sorulara ve seçeneklere eklenen görselleri destekler (Yeniden düzenlenmiş hibrit yaklaşım)
+- KULLANICI GERİ BİLDİRİM DÜZELTMELERİ UYGULANDI:
+  - FIX: "Diğer" seçeneğinin metin alanına yazıldığında otomatik olarak işaretlenmesi sağlandı.
+  - FIX: Çoktan seçmeli seçeneklerin (radyo düğmeleri) tekrar tıklanarak seçiminin kaldırılması sağlandı.
+  - INFO: Soru sırası, Google Form'un dahili veri yapısındaki sırayla birebir aynıdır.
 """
 
 import os
@@ -47,6 +51,8 @@ def analyze_google_form(url: str):
     desc_div = soup.find('div', class_='cBGGJ')
     form_data['description'] = get_inner_html(desc_div) if desc_div else ""
 
+    # Soruların sırası, Google'ın bu script içindeki veri yapısı tarafından belirlenir.
+    # Kod bu sırayı takip eder, bu nedenle klonlanan formun sırası orijinaliyle eşleşir.
     for script in soup.find_all('script'):
         if script.string and 'FB_PUBLIC_LOAD_DATA_' in script.string:
             try:
@@ -290,7 +296,54 @@ input[type=radio],input[type=checkbox]{flex-shrink:0;margin-top:0.3rem;width:1.1
 <button type="submit" class="btn">Gönder ve Excel Olarak İndir</button>
 </form>
 {% endif %}
-</div></body></html>
+</div>
+
+<!-- ================== BAŞLANGIÇ: JAVASCRIPT DÜZELTMELERİ ================== -->
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+    /*
+     * DÜZELTME 1: Radyo düğmelerinin seçiminin kaldırılmasına izin ver.
+     * Kullanıcı, seçili bir radyo düğmesine tekrar tıkladığında seçimin kaldırılmasını istedi.
+     * Bu betik, bu davranışı etkinleştirir.
+     */
+    let radioMouseDownChecked;
+
+    document.body.addEventListener('mousedown', e => {
+        // Olay hedefi bir radyo düğmesiyse, 'checked' durumunu yakala.
+        if (e.target.tagName === 'INPUT' && e.target.type === 'radio') {
+            radioMouseDownChecked = e.target.checked;
+        }
+    }, true); // Olayın state'i değiştirmesinden önce çalışmasını sağlamak için yakalama fazını kullan
+
+    document.body.addEventListener('click', e => {
+        // Eğer olay hedefi bir radyo düğmesiyse ve mousedown'da zaten işaretliyse
+        if (e.target.tagName === 'INPUT' && e.target.type === 'radio' && radioMouseDownChecked) {
+            // bu tıklama seçimi kaldırmalıdır.
+            e.target.checked = false;
+        }
+    });
+
+    /*
+     * DÜZELTME 2: "Diğer" metin alanına yazarken ilgili seçeneği otomatik olarak işaretle.
+     * Kullanıcı, "Diğer" kutusunu işaretlemeden metin girdiğinde, sorunun cevaplanmamış sayılmasını önler.
+     */
+    document.querySelectorAll('.other-option-input').forEach(textInput => {
+        const checkAssociatedControl = () => {
+            // En yakın üst <label> içindeki ilgili radyo veya onay kutusunu bul.
+            const associatedControl = textInput.closest('label').querySelector('input[type=radio], input[type=checkbox]');
+            if (associatedControl) {
+                associatedControl.checked = true;
+            }
+        };
+        // Kullanıcı metin alanına odaklandığında veya yazdığında dinleyiciyi tetikle.
+        textInput.addEventListener('input', checkAssociatedControl);
+        textInput.addEventListener('focus', checkAssociatedControl);
+    });
+});
+</script>
+<!-- ================== BİTİŞ: JAVASCRIPT DÜZELTMELERİ ================== -->
+
+</body></html>
 """
 
 @app.route('/', methods=['GET', 'POST'])
@@ -344,6 +397,7 @@ def submit():
             if "__other_option__" in answers:
                 answers.remove("__other_option__")
                 other_txt = user_answers.get(f"{entry}.other_option_response", "").strip()
+                # JavaScript düzeltmesi sayesinde, metin kutusuna yazıldığında __other_option__ seçilecektir.
                 final.append(f"Diğer: {other_txt}" if other_txt else "Diğer (belirtilmemiş)")
             final.extend(answers)
             if final: answer_str = ', '.join(final)
@@ -351,11 +405,14 @@ def submit():
             ans = user_answers.get(entry)
             if ans == "__other_option__":
                 other_txt = user_answers.get(f"{entry}.other_option_response", "").strip()
+                # JavaScript düzeltmesi sayesinde, metin kutusuna yazıldığında ans __other_option__ olacaktır.
                 answer_str = f"Diğer: {other_txt}" if other_txt else "Diğer (belirtilmemiş)"
             elif ans:
                 answer_str = ans
         else:
-            answer_str = user_answers.get(entry, "Boş Bırakıldı")
+            raw_answer = user_answers.get(entry, "")
+            answer_str = raw_answer if raw_answer.strip() != "" else "Boş Bırakıldı"
+
 
         results.append({"Soru": q_text_plain, "Soru Tipi": q_type, "Cevap": answer_str})
 
@@ -376,4 +433,5 @@ def submit():
                      download_name='form_cevaplari.xlsx')
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=False) # Debug'ı production için kapatmak daha iyidir.
