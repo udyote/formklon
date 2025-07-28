@@ -1,3 +1,20 @@
+TypeError: 'builtin_function_or_method' object is not iterable
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<template>", line 61, in top-level template code```
+
+Bu hata, Jinja2 şablonunuzun 61. satırında, yani `{% for opt in item.options %}` döngüsünde meydana geliyor. `TypeError: 'builtin_function_or_method' object is not iterable` mesajı, `item.options` değişkeninin bir liste (veya başka bir yinelenebilir nesne) olması beklenirken, aslında bir "yerleşik fonksiyon veya metot" (örneğin `list` fonksiyonunun kendisi gibi) olduğunu gösterir.
+
+Python kodunuzdaki `analyze_google_form` fonksiyonunda `question['options']` değerini atadığınız tüm yerleri kontrol ettim. Her durumda `[]` boş bir liste veya liste kapsaması (list comprehension) kullanılarak liste atanmış durumda. Bu, Python tarafında doğrudan bir fonksiyon ataması yapmadığınızı gösteriyor.
+
+Ancak, Jinja2 şablonu, `item.type` değeri `'Çoktan Seçmeli'` (veya seçenekleri olan diğer tipler) olduğunda `item.options`'ın yinelenebilir bir şey (liste gibi) olmasını bekler. Eğer bir nedenden dolayı (örneğin, çok nadir ve beklenmedik bir Google Form yapısı nedeniyle), `item.options` anahtarı bir `list` nesnesi yerine Python'ın yerleşik `list` *fonksiyonuna* referans verirse bu hata oluşur. Bu durum genellikle bir değişkenin yanlışlıkla bir fonksiyon objesine eşitlenmesiyle (`my_var = list` yerine `my_var = []` olması gerekirken yanlışlıkla `my_var = list` gibi) ortaya çıkar. Kodunuzda bu tür bir atama görünmüyor, bu yüzden sorun daha karmaşık bir senaryodan kaynaklanıyor olabilir.
+
+**Çözüm:**
+
+Sorunun temel nedeni hala net olmasa da (çünkü JSON verisi doğrudan fonksiyon içeremez), bu hatayı engelleyebilir ve uygulamanın çökmesini önleyebiliriz. Bunu, Jinja2 şablonunda `item.options` üzerinde döngü yapmadan önce, bu değişkenin gerçekten yinelenebilir (iterable) olup olmadığını kontrol ederek yapabiliriz.
+
+Aşağıda, `HTML_TEMPLATE` içinde `item.options` kullanılan tüm yerlere bu kontrolü ekleyerek güncellenmiş kodu bulabilirsiniz. Bu değişiklik, hata oluştuğunda uygulamanın çökmesi yerine, kullanıcıya sorunun kaynağını belirten bir uyarı mesajı göstermesini sağlayacaktır.
+
+```python
 import os
 import io
 import json
@@ -111,7 +128,7 @@ def analyze_google_form(url: str):
                 is_checkbox_grid = False
                 # Checkbox veya radio grid'i belirleme yapısı karmaşık olabilir.
                 # Genellikle item_json'daki belirli bir bayrağa bakılır.
-                # Örnek: q_info[4] veya q_info[5] checkbox grid'i işaret edebilir.
+                # Örn: q_info[4] veya q_info[5] checkbox grid'i işaret edebilir.
                 if len(question_data_from_json) > 4 and question_data_from_json[4]: 
                     is_checkbox_grid = True
 
@@ -134,9 +151,9 @@ def analyze_google_form(url: str):
             elif item_type_id == 1:
                 question['type'] = 'Paragraf'
             elif item_type_id in (2, 4):  # Çoktan Seçmeli (radio), Onay Kutuları (checkbox)
-                question['options'] = []
+                question['options'] = [] # Her zaman boş bir liste olarak başlat
                 question['has_other'] = False
-                if q_info and len(q_info) > 1 and q_info[1]:  # Seçenekler dizisi
+                if q_info and len(q_info) > 1 and q_info[1] and isinstance(q_info[1], list):  # Seçenekler dizisi ve liste olduğundan emin ol
                     for opt in q_info[1]:
                         option_dict = {'text': Markup(opt[0]) if opt and len(opt) > 0 and opt[0] else ""}
                         # Seçenek verisinde resim URL'sini kontrol et (örn: opt[5][0][0] veya opt[6][0][0])
@@ -152,15 +169,15 @@ def analyze_google_form(url: str):
                 question['type'] = 'Çoktan Seçmeli' if item_type_id == 2 else 'Onay Kutuları'
             elif item_type_id == 3:
                 question['type'] = 'Açılır Liste'
-                question['options'] = [{'text': Markup(o[0])} for o in q_info[1] if o and len(o) > 0 and o[0]]
+                question['options'] = [{'text': Markup(o[0])} for o in q_info[1] if o and len(o) > 0 and o[0] and isinstance(q_info[1], list)] if q_info and len(q_info) > 1 and isinstance(q_info[1], list) else []
             elif item_type_id == 5:
                 question['type'] = 'Doğrusal Ölçek'
-                question['options'] = [{'text': Markup(str(o[0]))} for o in q_info[1]]
+                question['options'] = [{'text': Markup(str(o[0]))} for o in q_info[1] if isinstance(q_info[1], list)] if q_info and len(q_info) > 1 and isinstance(q_info[1], list) else []
                 question['labels'] = [Markup(q_info[3][0]) if q_info and len(q_info) > 3 and q_info[3] and len(q_info[3]) > 0 and q_info[3][0] else "",
                                       Markup(q_info[3][1]) if q_info and len(q_info) > 3 and q_info[3] and len(q_info[3]) > 1 and q_info[3][1] else ""]
             elif item_type_id == 18:
                 question['type'] = 'Derecelendirme'
-                question['options'] = [{'text': Markup(str(o[0]))} for o in q_info[1]]
+                question['options'] = [{'text': Markup(str(o[0]))} for o in q_info[1] if isinstance(q_info[1], list)] if q_info and len(q_info) > 1 and isinstance(q_info[1], list) else []
             elif item_type_id == 9:
                 question['type'] = 'Tarih'
             elif item_type_id == 10:
@@ -250,6 +267,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         .form-section-header p { white-space:pre-wrap; color:#555; line-height:1.5; }
         .form-image-block { padding:1rem; text-align:center; background:#f0f7ff; border-color:#d0e7ff; border-radius: 8px; }
         .form-image-block p { font-weight:bold; color:#3a5a9a; }
+        .warning-message { background: #ffc107; color: #333; padding: 0.8rem; border-radius: 6px; text-align: center; margin-top: 0.5rem; }
     </style>
 </head>
 <body>
@@ -283,6 +301,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 <textarea name=\"{{ item.entry_id }}\" {% if item.required %}required{% endif %}></textarea>
                 {% elif item.type == 'Çoktan Seçmeli' %}
                 <div class=\"radio-group\">
+                {% if item.options is defined and item.options is not none and item.options is iterable %}
                     {% for opt in item.options %}
                     <label>
                         <input type=\"radio\" name=\"{{ item.entry_id }}\" value=\"{{ opt.text | safe }}\" {% if item.required %}required{% endif %}>
@@ -290,16 +309,20 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                         <span>{{ opt.text | safe }}</span>
                     </label>
                     {% endfor %}
-                    {% if item.has_other %}
-                    <label class=\"other-option-label\">
-                        <input type=\"radio\" name=\"{{ item.entry_id }}\" value=\"__other_option__\">
-                        <span>Diğer:</span>
-                        <input type=\"text\" class=\"other-option-input\" name=\"{{ item.entry_id }}.other_option_response\">
-                    </label>
-                    {% endif %}
+                {% else %}
+                    <div class=\"warning-message\">Uyarı: Bu çoktan seçmeli soru için seçenekler beklenildiği gibi değil. Lütfen formu kontrol edin.</div>
+                {% endif %}
+                {% if item.has_other %}
+                <label class=\"other-option-label\">
+                    <input type=\"radio\" name=\"{{ item.entry_id }}\" value=\"__other_option__\">
+                    <span>Diğer:</span>
+                    <input type=\"text\" class=\"other-option-input\" name=\"{{ item.entry_id }}.other_option_response\">
+                </label>
+                {% endif %}
                 </div>
                 {% elif item.type == 'Onay Kutuları' %}
                 <div class=\"checkbox-group\">
+                {% if item.options is defined and item.options is not none and item.options is iterable %}
                     {% for opt in item.options %}
                     <label>
                         <input type=\"checkbox\" name=\"{{ item.entry_id }}\" value=\"{{ opt.text | safe }}\">
@@ -307,34 +330,49 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                         <span>{{ opt.text | safe }}</span>
                     </label>
                     {% endfor %}
-                    {% if item.has_other %}
-                    <label class=\"other-option-label\">
-                        <input type=\"checkbox\" name=\"{{ item.entry_id }}\" value=\"__other_option__\">
-                        <span>Diğer:</span>
-                        <input type=\"text\" class=\"other-option-input\" name=\"{{ item.entry_id }}.other_option_response\">
-                    </label>{% endif %}
+                {% else %}
+                    <div class=\"warning-message\">Uyarı: Bu onay kutulu soru için seçenekler beklenildiği gibi değil. Lütfen formu kontrol edin.</div>
+                {% endif %}
+                {% if item.has_other %}
+                <label class=\"other-option-label\">
+                    <input type=\"checkbox\" name=\"{{ item.entry_id }}\" value=\"__other_option__\">
+                    <span>Diğer:</span>
+                    <input type=\"text\" class=\"other-option-input\" name=\"{{ item.entry_id }}.other_option_response\">
+                </label>{% endif %}
                 </div>
                 {% elif item.type == 'Açılır Liste' %}
+                {% if item.options is defined and item.options is not none and item.options is iterable %}
                 <select name=\"{{ item.entry_id }}\" {% if item.required %}required{% endif %}>
                     <option value=\"\" disabled selected>Seçin...</option>
                     {% for opt in item.options %}<option value=\"{{ opt.text | safe }}\">{{ opt.text | safe }}</option>{% endfor %}
                 </select>
+                {% else %}
+                    <div class=\"warning-message\">Uyarı: Bu açılır liste soru için seçenekler beklenildiği gibi değil. Lütfen formu kontrol edin.</div>
+                {% endif %}
                 {% elif item.type == 'Doğrusal Ölçek' %}
                 <div class=\"radio-group\" style=\"flex-direction:row;justify-content:space-around;align-items:center;\">
                     <span>{{ item.labels[0] | safe }}</span>
+                {% if item.options is defined and item.options is not none and item.options is iterable %}
                     {% for opt in item.options %}
                     <label style=\"flex-direction:column;\"><span>{{ opt.text | safe }}</span>
                     <input type=\"radio\" name=\"{{ item.entry_id }}\" value=\"{{ opt.text | safe }}\" {% if item.required %}required{% endif %}>
                     </label>
                     {% endfor %}
+                {% else %}
+                    <div class=\"warning-message\">Uyarı: Bu doğrusal ölçek soru için seçenekler beklenildiği gibi değil. Lütfen formu kontrol edin.</div>
+                {% endif %}
                     <span>{{ item.labels[1] | safe }}</span>
                 </div>
                 {% elif item.type == 'Derecelendirme' %}
                 <div class=\"rating-group\">
+                {% if item.options is defined and item.options is not none and item.options is iterable %}
                     {% for opt in item.options | reverse %}
                     <input type=\"radio\" id=\"star{{ opt.text | safe }}-{{ item.entry_id }}\" name=\"{{ item.entry_id }}\" value=\"{{ opt.text | safe }}\" {% if item.required %}required{% endif %}>
                     <label for=\"star{{ opt.text | safe }}-{{ item.entry_id }}\">★</label>
                     {% endfor %}
+                {% else %}
+                    <div class=\"warning-message\">Uyarı: Bu derecelendirme soru için seçenekler beklenildiği gibi değil. Lütfen formu kontrol edin.</div>
+                {% endif %}
                 </div>
                 {% elif item.type == 'Tarih' %}
                 <input type=\"date\" name=\"{{ item.entry_id }}\" {% if item.required %}required{% endif %}>
@@ -412,7 +450,7 @@ def submit():
             continue
 
         q_text = item['text']
-        q_type = item['type']  # Bu, dahili olarak ayrıştırılmış tiptir ('Kısa Yanıt' gibi)
+        q_type = item.get('type') # Bu, dahili olarak ayrıştırılmış tiptir ('Kısa Yanıt' gibi)
         original_q_type = item.get('original_type', q_type)  # Özel E-posta alanı için
 
         # E-posta alanını özel olarak ele al
