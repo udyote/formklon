@@ -3,22 +3,23 @@
 Google Form Klonlayıcı - Nihai Sürüm
 - SECRET_KEY .env / ortam değişkeninden okunur
 - Gunicorn ile çalıştırılabilir
-- JS sonrası DOM için Playwright entegrasyonu (fallback: requests)
-- Zengin metin (bold/italic/underline/link) tespiti
-- Soru olmayan öğeler (Başlık, Media) da Excel'e eklenir
-- Raw HTML ayrı sheet'te saklanır
+- Google Form verisini çekip yeniden oluşturur ve cevapları Excel + çekilen HTML ile zip içinde indirir
+- Zengin metin (bold/italic/underline/link) ve HTML içerikleri yakalanır
+- Başlık / Media gibi soru olmayan öğeler de Excel'de yer alır
+- JS sonrası DOM için Playwright ile render
 """
 
 import os
 import io
 import json
 import traceback
+import zipfile
 import requests
 import pandas as pd
 from bs4 import BeautifulSoup
 from flask import Flask, request, render_template_string, send_file, session
 
-# Playwright import; yoksa fallback yapılır
+# Playwright import (fallback varsa çalışmaya devam eder)
 try:
     from playwright.sync_api import sync_playwright, TimeoutError as PWTimeoutError
     PLAYWRIGHT_AVAILABLE = True
@@ -91,12 +92,7 @@ def detect_formatting(html: str):
         any('underline' in (tag.get('style') or '').lower() for tag in soup.find_all(['span', 'div', 'p']))
     )
     link = bool(soup.find('a'))
-    return {
-        'bold': bold,
-        'italic': italic,
-        'underline': underline,
-        'link': link,
-    }
+    return {'bold': bold, 'italic': italic, 'underline': underline, 'link': link}
 
 
 def analyze_google_form(url: str):
@@ -123,7 +119,7 @@ def analyze_google_form(url: str):
                 return {"error": f"URL okunamadı. Geçerli bir Google Form linki girin. Hata: {e}"}
 
         soup = BeautifulSoup(html_text, 'html.parser')
-        form_data = {"pages": [], "raw_html": html_text}
+        form_data = {"pages": []}
 
         title_div = soup.find('div', class_='F9yp7e')
         form_data['title'] = get_inner_html(title_div) if title_div else "İsimsiz Form"
@@ -266,6 +262,8 @@ def analyze_google_form(url: str):
 
         if not form_data['pages'] or not form_data['pages'][0]:
             return {"error": "Formda analiz edilecek soru veya bölüm bulunamadı."}
+        # ham HTML'i de döndür
+        form_data['_raw_html'] = html_text
         return form_data
 
     except Exception as e:
@@ -274,7 +272,6 @@ def analyze_google_form(url: str):
         return {"error": f"Beklenmeyen bir hata oluştu: {e}"}
 
 
-# (HTML_TEMPLATE aynen önceki haliyle; stil/JS ve form görünümü bozulmadan korunmalı)
 HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="tr"><head><meta charset="UTF-8"><title>Google Form Klonlayıcı</title>
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
@@ -509,60 +506,45 @@ def submit():
 
     user_answers = request.form
     results = []
-
-    all_items = []
+    all_questions = []
     for page in form_structure.get('pages', []):
-        all_items.extend(page)
+        all_questions.extend(page)
 
     debug = os.environ.get("DEBUG_FORM_CLONE", "") in ("1", "true", "True")
 
-    for item in all_items:
-        q_type = item.get('type')
-        q_text_html = item.get('text') or ""
-        q_desc_html = item.get('description') or ""
-        formatting_title = detect_formatting(q_text_html)
-        formatting_desc = detect_formatting(q_desc_html)
-        plain_text = BeautifulSoup(q_text_html, "html.parser").get_text(separator=" ", strip=True) or f"[İsimsiz - Tip: {q_type}]"
+    for question in all_questions:
+        q_type = question.get('type')
+        q_text_html = question.get('text') or ''
+        q_desc_html = question.get('description') or ''
+        q_text_plain = BeautifulSoup(q_text_html, "html.parser").get_text(separator=" ", strip=True)
+        if not q_text_plain:
+            q_text_plain = f"[İsimsiz Soru - Tip: {q_type}]"
 
+        formatting = detect_formatting(q_text_html)
         if debug:
-            print("DEBUG item type:", q_type)
-            print("DEBUG title HTML:", q_text_html)
-            print("DEBUG desc HTML:", q_desc_html)
-            print("DEBUG formatting title:", formatting_title)
-            print("DEBUG formatting desc:", formatting_desc)
+            print("DEBUG question HTML:", q_text_html)
+            print("DEBUG formatting:", formatting)
 
-        # Başlık / Media gibi cevap olmayanlar
         if q_type in ['Başlık', 'Media']:
+            # cevap yok, sadece bilgi
             results.append({
-                "Soru": plain_text,
+                "Soru": q_text_plain,
                 "Soru Tipi": q_type,
                 "Cevap": "",
                 "Soru HTML": q_text_html,
                 "Soru Açıklama HTML": q_desc_html,
                 "Cevap HTML": "",
-                "Soru Bold Var": formatting_title['bold'],
-                "Soru Italic Var": formatting_title['italic'],
-                "Soru Underline Var": formatting_title['underline'],
-                "Soru Link Var": formatting_title['link'],
-                "Açıklama Bold Var": formatting_desc['bold'],
-                "Açıklama Italic Var": formatting_desc['italic'],
-                "Açıklama Underline Var": formatting_desc['underline'],
-                "Açıklama Link Var": formatting_desc['link'],
-                "Görsel URL": item.get('image_url', "")
+                "Soru Bold Var": formatting['bold'],
+                "Soru Italic Var": formatting['italic'],
+                "Soru Underline Var": formatting['underline'],
+                "Soru Link Var": formatting['link'],
             })
             continue
 
-        # Normal sorular
-        entry = item.get('entry_id')
-        answer_str = "Boş Bırakıldı"
-        answer_html = ""
-        if not entry:
-            continue
-
         if 'Tablo' in q_type:
-            for row in item.get('rows', []):
+            for row in question['rows']:
                 rid = row['entry_id']
-                row_label_plain = f"{plain_text} [{row.get('text','')}]"
+                row_label_plain = f"{q_text_plain} [{row['text']}]"
                 if 'Onay' in q_type:
                     answers = user_answers.getlist(rid)
                     val = ', '.join(answers) if answers else "Boş Bırakıldı"
@@ -576,36 +558,37 @@ def submit():
                     "Soru HTML": q_text_html,
                     "Soru Açıklama HTML": q_desc_html,
                     "Cevap HTML": answer_html,
-                    "Soru Bold Var": formatting_title['bold'],
-                    "Soru Italic Var": formatting_title['italic'],
-                    "Soru Underline Var": formatting_title['underline'],
-                    "Soru Link Var": formatting_title['link'],
-                    "Açıklama Bold Var": formatting_desc['bold'],
-                    "Açıklama Italic Var": formatting_desc['italic'],
-                    "Açıklama Underline Var": formatting_desc['underline'],
-                    "Açıklama Link Var": formatting_desc['link'],
-                    "Görsel URL": item.get('image_url', "")
+                    "Soru Bold Var": formatting['bold'],
+                    "Soru Italic Var": formatting['italic'],
+                    "Soru Underline Var": formatting['underline'],
+                    "Soru Link Var": formatting['link'],
                 })
             continue
 
+        entry = question.get('entry_id')
+        if not entry:
+            continue
+
+        answer_str = "Boş Bırakıldı"
+        answer_html = ""
         if q_type == 'Onay Kutuları':
             answers = user_answers.getlist(entry)
-            finals = []
+            final = []
             html_parts = []
             if "__other_option__" in answers:
                 answers.remove("__other_option__")
                 other_txt = user_answers.get(f"{entry}.other_option_response", "").strip()
-                finals.append(f"Diğer: {other_txt}" if other_txt else "Diğer (belirtilmemiş)")
+                final.append(f"Diğer: {other_txt}" if other_txt else "Diğer (belirtilmemiş)")
                 html_parts.append(f"<span>Diğer: {other_txt or 'belirtilmemiş'}</span>")
-            finals.extend(answers)
-            if answers and isinstance(item.get('options'), list):
+            final.extend(answers)
+            if answers and isinstance(question.get('options'), list):
                 for sel in answers:
-                    for opt in item['options']:
+                    for opt in question['options']:
                         if opt.get('text') == sel:
                             html_parts.append(opt.get('html') or f"<span>{sel}</span>")
                             break
-            if finals:
-                answer_str = ', '.join(finals)
+            if final:
+                answer_str = ', '.join(final)
                 answer_html = ''.join(html_parts)
         elif q_type == 'Çoktan Seçmeli':
             ans = user_answers.get(entry)
@@ -615,55 +598,59 @@ def submit():
                 answer_html = f"<span>Diğer: {other_txt or 'belirtilmemiş'}</span>"
             elif ans:
                 answer_str = ans
-                if isinstance(item.get('options'), list):
-                    for opt in item['options']:
+                if isinstance(question.get('options'), list):
+                    for opt in question['options']:
                         if opt.get('text') == ans:
                             answer_html = opt.get('html') or f"<span>{ans}</span>"
                             break
         else:
-            raw = user_answers.get(entry, "")
-            answer_str = raw if raw.strip() != "" else "Boş Bırakıldı"
-            answer_html = f"<span>{raw}</span>" if raw.strip() != "" else ""
+            raw_answer = user_answers.get(entry, "")
+            answer_str = raw_answer if raw_answer.strip() != "" else "Boş Bırakıldı"
+            answer_html = f"<span>{raw_answer}</span>" if raw_answer.strip() != "" else ""
 
         results.append({
-            "Soru": plain_text,
+            "Soru": q_text_plain,
             "Soru Tipi": q_type,
             "Cevap": answer_str,
             "Soru HTML": q_text_html,
             "Soru Açıklama HTML": q_desc_html,
             "Cevap HTML": answer_html,
-            "Soru Bold Var": formatting_title['bold'],
-            "Soru Italic Var": formatting_title['italic'],
-            "Soru Underline Var": formatting_title['underline'],
-            "Soru Link Var": formatting_title['link'],
-            "Açıklama Bold Var": formatting_desc['bold'],
-            "Açıklama Italic Var": formatting_desc['italic'],
-            "Açıklama Underline Var": formatting_desc['underline'],
-            "Açıklama Link Var": formatting_desc['link'],
-            "Görsel URL": item.get('image_url', "")
+            "Soru Bold Var": formatting['bold'],
+            "Soru Italic Var": formatting['italic'],
+            "Soru Underline Var": formatting['underline'],
+            "Soru Link Var": formatting['link'],
         })
 
     df = pd.DataFrame(results)
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df.to_excel(writer, index=False, sheet_name='Form Cevaplari')
-        # Raw HTML sheet
-        raw_html = form_structure.get('raw_html', '') if (form_structure := session.get('form_structure')) else ''
-        raw_df = pd.DataFrame([{"Raw HTML": raw_html}])
-        raw_df.to_excel(writer, index=False, sheet_name='Raw HTML')
-        # Kolon genişlik ayarları
-        for sheet_name in writer.sheets:
-            ws = writer.sheets[sheet_name]
-            df_sheet = df if sheet_name == 'Form Cevaplari' else raw_df
-            for i, col in enumerate(df_sheet.columns):
-                col_width = max(df_sheet[col].astype(str).map(len).max(), len(col))
-                ws.column_dimensions[chr(65 + i)].width = min(col_width + 2, 100)
-    output.seek(0)
+
+    # Excel dosyasını oluştur
+    excel_buffer = io.BytesIO()
+    with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+        sheet = 'Form Cevaplari'
+        df.to_excel(writer, index=False, sheet_name=sheet)
+        ws = writer.sheets[sheet]
+        for i, col in enumerate(df.columns):
+            col_width = max(df[col].astype(str).map(len).max(), len(col))
+            ws.column_dimensions[chr(65 + i)].width = min(col_width + 2, 70)
+    excel_buffer.seek(0)
+
+    # Ham HTML'i al
+    raw_html = form_structure.get('_raw_html', '')
+    if not raw_html:
+        raw_html = "<!-- Raw HTML bulunamadı -->"
+
+    # Zip içine koy
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as z:
+        z.writestr("form_cevaplari.xlsx", excel_buffer.getvalue())
+        z.writestr("fetched_form.html", raw_html)
+    zip_buffer.seek(0)
+
     session.pop('form_structure', None)
-    return send_file(output,
-                     mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    return send_file(zip_buffer,
+                     mimetype='application/zip',
                      as_attachment=True,
-                     download_name='form_cevaplari.xlsx')
+                     download_name='form_results.zip')
 
 
 if __name__ == '__main__':
