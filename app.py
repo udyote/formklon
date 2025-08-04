@@ -39,18 +39,13 @@ def analyze_google_form(url: str):
                            'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36')
         }
 
-        # ================== BAŞLANGIÇ: YENİ EKLENEN KOD (Kısaltılmış Link Çözücü) ==================
-        # Eğer URL kısaltılmış bir 'forms.gle' linki ise, önce gerçek adresi bul.
         if "forms.gle/" in url:
             try:
-                # 'allow_redirects=True' (varsayılan) ile istek göndererek yönlendirmeyi takip et.
-                # 'timeout' ekleyerek sonsuz döngü veya yavaş bağlantıları önle.
                 head_response = requests.head(url, allow_redirects=True, timeout=10, headers=headers)
                 head_response.raise_for_status()
-                url = head_response.url  # Yönlendirmenin sonundaki nihai URL'yi al.
+                url = head_response.url
             except requests.exceptions.RequestException as e:
                 return {"error": f"Kısaltılmış URL çözülemedi. Linkin çalıştığından emin olun. Hata: {e}"}
-        # ================== BİTİŞ: YENİ EKLENEN KOD ==================
 
         response = requests.get(url, headers=headers, timeout=15)
         response.raise_for_status()
@@ -113,6 +108,12 @@ def analyze_google_form(url: str):
                             question['cols'] = [c[0] for c in first_row[1]]
                             question['rows'] = [{'text': r[3][0], 'entry_id': f"entry.{r[0]}"} for r in rows_data]
                             form_data['questions'].append(question)
+                            continue
+                        
+                        # Bazen q_data[4] 'None' olabilir (örn. video eklenmişse), bu durumu kontrol et.
+                        if q_data[4] is None:
+                            # Bu öğenin bir soru olmadığını varsay ve atla.
+                            # 'question' nesnesini listeye eklemeden döngüye devam et.
                             continue
 
                         q_info = q_data[4][0]
@@ -441,7 +442,16 @@ def submit():
         if q_type == 'Başlık':
             continue
 
-        q_text_plain = BeautifulSoup(question['text'], "html.parser").get_text(separator=" ", strip=True)
+        # ================== BAŞLANGIÇ: HATA DÜZELTMESİ ==================
+        # Bazı form elemanlarının (örn: sadece resim/video içeren sorular) başlık metni ('text') olmayabilir.
+        # Bu durumda question['text'] 'None' olur ve BeautifulSoup'a gönderildiğinde hataya neden olur.
+        # Bu kontrol, 'None' değeri yerine boş bir string ('') kullanarak hatayı önler.
+        q_text_html = question.get('text') or ''
+        q_text_plain = BeautifulSoup(q_text_html, "html.parser").get_text(separator=" ", strip=True)
+        # Eğer soru metni yoksa (örneğin sadece bir görsel varsa), Excel'de daha anlaşılır olması için bir yer tutucu metin ekleyelim.
+        if not q_text_plain:
+            q_text_plain = f"[İsimsiz Soru - Tip: {q_type}]"
+        # ================== BİTİŞ: HATA DÜZELTMESİ ==================
 
         if 'Tablo' in q_type:
             for row in question['rows']:
