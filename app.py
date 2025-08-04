@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Google Form Klonlayıcı (Tam ve Güncel Versiyon - Güvenilir Görsel Alma)
+Google Form Klönlayıcı (Tam ve Güncel Versiyon - Güvenilir Görsel Alma)
 Production (Railway / Render / Heroku) uyumlu.
 
 ÖZELLİKLER:
@@ -211,7 +211,7 @@ def analyze_google_form(url: str):
 
 
 HTML_TEMPLATE = """<!DOCTYPE html>
-<html lang="tr"><head><meta charset="UTF-8"><title>Google Form Klonlayıcı- Eski Sürum</title>
+<html lang="tr"><head><meta charset="UTF-8"><title>Google Form Klönlayıcı- Eski Sürum</title>
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
 <style>
 body{font-family:Arial,sans-serif;background:#f4f7fa;margin:0;padding:2rem;display:flex;justify-content:center}
@@ -254,7 +254,7 @@ input[type=radio],input[type=checkbox]{flex-shrink:0;margin-top:0.3rem;width:1.1
 .option-text{line-height:1.4}
 </style></head>
 <body><div class="container">
-<h1>Google Form Klonlayıcı</h1>
+<h1>Google Form Klönlayıcı</h1>
 <form method="post" action="/"><div class="form-group" style="padding:0.8rem;">
 <input type="text" name="url" placeholder="https://docs.google.com/forms/d/e/..." required>
 <button type="submit" class="btn" style="margin-top:.8rem;">Formu Oluştur</button>
