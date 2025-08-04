@@ -23,20 +23,41 @@ from flask import Flask, request, render_template_string, send_file, session
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-fallback-key")
 
-# === ÇÖZÜM: KULLANICININ ANALİZİNE DAYALI OLARAK İYİLEŞTİRİLMİŞ FONKSİYON ===
+# === KESİN ÇÖZÜM: KULLANICININ SAĞLADIĞI GELİŞMİŞ FONKSİYON ===
 def get_inner_html(element):
     """
     Bir BeautifulSoup elementinin iç HTML'ini string olarak döndürür.
-    Gereksiz <font> etiketlerini temizlerken, <b>, <i>, <u>, <a>, <ul>, <ol>, <li>
-    gibi zengin metin biçimlendirme etiketlerini korur.
+    Google Form'un kullandığı <span style="..."> yapılarını <b>, <i>, <u> etiketlerine dönüştürür
+    ve sadece izin verilen zengin metin etiketlerini koruyarak diğerlerini temizler.
     """
     if not element:
         return ""
-    # Google'ın eklediği ve formatı bozan <font> etiketlerini kaldır ama içindeki metni/tag'leri koru.
-    # Bu işleme "unwrap" denir.
-    for font_tag in element.find_all('font'):
-        font_tag.unwrap()
+
+    # 1. Adım: Stil özellikli span'leri anlamsal etiketlere dönüştür
+    for span in element.find_all("span"):
+        style = span.get("style", "")
+        if "font-weight:700" in style or "font-weight:bold" in style:
+            span.name = "b"
+            span.attrs = {} # style özelliğini temizle
+        elif "font-style:italic" in style:
+            span.name = "i"
+            span.attrs = {} # style özelliğini temizle
+        elif "text-decoration:underline" in style:
+            span.name = "u"
+            span.attrs = {} # style özelliğini temizle
+
+    # 2. Adım: İzin verilen etiketler dışındaki her şeyi "unwrap" et (içeriğini koru, etiketi kaldır)
+    allowed_tags = ['b', 'strong', 'i', 'em', 'u', 'a', 'br', 'ul', 'ol', 'li']
+    
+    # find_all() ile tüm etiketleri bulup, izin listesinde olmayanları temizle
+    # Not: Elementin kendisini (root) değiştirmemek için `element.find_all()` kullanılır.
+    for tag in element.find_all(True): # True tüm tag'leri seçer
+        if tag.name not in allowed_tags:
+            tag.unwrap()
+
+    # 3. Adım: Temizlenmiş HTML'in string temsilini döndür
     return "".join(map(str, element.contents)).strip()
+
 
 def analyze_google_form(url: str):
     """Google Form URL'sini parse ederek zengin metin, görseller ve doğru bölümlemeyi içeren form yapısını döndürür."""
@@ -92,7 +113,6 @@ def analyze_google_form(url: str):
                         question = {'image_url': None}
                         item_container = soup.find('div', {'data-item-id': str(item_id)})
                         
-                        # Zengin metni (HTML) doğrudan ve doğru bir şekilde al
                         q_text_element = item_container.select_one('.M7eMe') if item_container else None
                         q_desc_element = item_container.select_one('.OIC90c') if item_container else None
                         
