@@ -27,6 +27,9 @@ def get_inner_html(element):
     """Bir BeautifulSoup elementinin iç HTML'ini string olarak döndürür."""
     if not element:
         return ""
+    # Google'ın eklediği çeviri etiketlerini ve gereksiz boşlukları temizle
+    for font_tag in element.find_all('font'):
+        font_tag.unwrap()
     return "".join(map(str, element.contents)).strip()
 
 def analyze_google_form(url: str):
@@ -47,13 +50,11 @@ def analyze_google_form(url: str):
     soup = BeautifulSoup(response.text, 'html.parser')
     form_data = {"pages": []}
     
-    # === ESKİ KODDAN GELEN GÜVENİLİR BAŞLIK/AÇIKLAMA ALMA YÖNTEMİ ===
-    # .text yerine get_inner_html kullanarak zengin metni (<b>, <a> vb.) koruyoruz.
+    # Ana başlık ve açıklama için zengin metin alımı (Bu kısım zaten doğru çalışıyordu)
     title_div = soup.find('div', class_='F9yp7e')
     form_data['title'] = get_inner_html(title_div) if title_div else "İsimsiz Form"
     desc_div = soup.find('div', class_='cBGGJ')
     form_data['description'] = get_inner_html(desc_div) if desc_div else ""
-
 
     for script in soup.find_all('script'):
         if script.string and 'FB_PUBLIC_LOAD_DATA_' in script.string:
@@ -64,6 +65,7 @@ def analyze_google_form(url: str):
                 
                 current_page = []
 
+                # E-posta alanı kontrolü
                 email_div = soup.find('div', {'jsname': 'Y0xS1b'})
                 if email_div:
                     try:
@@ -78,27 +80,36 @@ def analyze_google_form(url: str):
                                 })
                     except Exception: pass
 
+                # Soruları ve bölümleri işle
                 for q_data in question_list:
                     try:
                         item_id = q_data[0]
                         q_type = q_data[3]
                         question = {'image_url': None}
+                        
+                        # Her soru/bölüm için ilgili HTML bloğunu bul
                         item_container = soup.find('div', {'data-item-id': str(item_id)})
                         
-                        question['text'] = q_data[1]
-                        question['description'] = q_data[2] if len(q_data) > 2 and q_data[2] else ""
+                        # === GÜNCELLEME BAŞLANGICI: Zengin metin formatını korumak için HTML'den okuma ===
+                        # JSON'daki düz metin yerine, BeautifulSoup ile HTML'den başlık ve açıklamayı al
+                        q_text_element = item_container.select_one('.meSK8.M7eMe') if item_container else None
+                        q_desc_element = item_container.select_one('.spb5Rd.OIC90c') if item_container else None
                         
+                        question['text'] = get_inner_html(q_text_element) if q_text_element else q_data[1]
+                        question['description'] = get_inner_html(q_desc_element) if q_desc_element else (q_data[2] if len(q_data) > 2 and q_data[2] else "")
+                        # === GÜNCELLEME SONU ===
+
                         if item_container:
                             img_elem = item_container.select_one('.y6GzNb img')
                             if img_elem and img_elem.has_attr('src'): question['image_url'] = img_elem.get('src')
                         
                         if q_data[4] is None:
+                            # Bu bir medya veya başlık bloğudur, soru değildir
                             current_page.append({'type': 'Media', 'text': question['text'], 'description': question['description'], 'image_url': question['image_url']})
                             continue
 
-                        if q_type == 6:
-                            question['type'] = 'Başlık'
-                        elif q_type == 7:
+                        # Soru tiplerini ve detaylarını işle
+                        if q_type == 7: # Grid Tipi Sorular
                             rows_data = q_data[4]
                             if not (isinstance(rows_data, list) and rows_data): continue
                             first_row = rows_data[0]
@@ -106,14 +117,14 @@ def analyze_google_form(url: str):
                             question['required'] = bool(first_row[2])
                             question['cols'] = [c[0] for c in first_row[1]]
                             question['rows'] = [{'text': r[3][0], 'entry_id': f"entry.{r[0]}"} for r in rows_data]
-                        else:
+                        else: # Diğer tüm soru tipleri
                             q_info = q_data[4][0]
                             question['entry_id'] = f"entry.{q_info[0]}"
                             question['required'] = bool(q_info[2])
 
                             if q_type == 0: question['type'] = 'Kısa Yanıt'
                             elif q_type == 1: question['type'] = 'Paragraf'
-                            elif q_type in (2, 4):
+                            elif q_type in (2, 4): # Çoktan Seçmeli ve Onay Kutuları
                                 question['options'] = []
                                 question['has_other'] = False
                                 if q_info[1]:
@@ -127,22 +138,24 @@ def analyze_google_form(url: str):
                                             if img_tag and img_tag.has_attr('src'): opt_image_url = img_tag.get('src')
                                         question['options'].append({'text': opt[0], 'image_url': opt_image_url})
                                 question['type'] = 'Çoktan Seçmeli' if q_type == 2 else 'Onay Kutuları'
-                            elif q_type == 3:
+                            elif q_type == 3: # Açılır Liste
                                 question['type'] = 'Açılır Liste'
                                 question['options'] = [o[0] for o in q_info[1] if o[0]]
-                            elif q_type == 5:
+                            elif q_type == 5: # Doğrusal Ölçek
                                 question['type'] = 'Doğrusal Ölçek'
                                 question['options'] = [o[0] for o in q_info[1]]
                                 question['labels'] = q_info[3] if len(q_info) > 3 and q_info[3] else ["", ""]
-                            elif q_type == 18:
+                            elif q_type == 18: # Derecelendirme
                                 question['type'] = 'Derecelendirme'
                                 question['options'] = [str(o[0]) for o in q_info[1]]
                             elif q_type == 9: question['type'] = 'Tarih'
                             elif q_type == 10: question['type'] = 'Saat'
+                            elif q_type == 6: question['type'] = 'Başlık' # Bu tip genellikle Media olarak handle ediliyor ama yedek olarak durabilir.
                             else: continue
                         
                         current_page.append(question)
 
+                        # Bölüm sonu kontrolü
                         is_page_break = len(q_data) > 12 and q_data[12]
                         if is_page_break:
                             form_data['pages'].append(current_page)
@@ -155,6 +168,7 @@ def analyze_google_form(url: str):
                 if current_page:
                     form_data['pages'].append(current_page)
                 
+                # Eğer hiç sayfa oluşmadıysa ama mevcut sorular varsa, tek bir sayfa olarak ekle
                 if not form_data['pages'] and current_page:
                      form_data['pages'].append(current_page)
 
@@ -243,6 +257,7 @@ input[type=radio],input[type=checkbox]{flex-shrink:0;margin-top:0.3rem;width:1.1
 .title-description-block{padding-bottom:1rem;border-bottom:1px solid var(--bs-border-color);margin-bottom:1.6rem}
 .section-title{margin-top:0;margin-bottom:0.5rem;font-size:1.3em;color:var(--bs-body-color);}
 .section-description{white-space:pre-wrap;color:var(--bs-secondary-color);line-height:1.5;margin-top:0;font-size:0.95em}
+.section-description ul,.section-description ol{margin-top:0.5rem;padding-left:1.5rem;}
 .main-description{white-space:pre-wrap;color: var(--bs-body-color); line-height:1.5;}
 .main-description ul,.main-description ol{margin-top:0.5rem;padding-left:1.5rem;}
 .form-image-container{text-align:center;margin-bottom:1rem;margin-top:1rem;}
@@ -360,14 +375,52 @@ function validatePage(pageIndex) {
     const requiredInputs = currentPage.querySelectorAll('[required]');
     let allValid = true;
     for (const input of requiredInputs) {
-        if (!input.checkValidity()) { allValid = false; break; }
+        // For radio buttons in a grid, check if at least one in the group is checked
+        if (input.type === 'radio') {
+            const radioGroup = currentPage.querySelectorAll(`input[name="${input.name}"]`);
+            if (Array.from(radioGroup).some(radio => radio.checked)) {
+                // If one is checked, remove required from others to pass validation
+                 radioGroup.forEach(r => r.removeAttribute('required'));
+            } else {
+                 if (!input.checkValidity()) { allValid = false; break; }
+            }
+        } else {
+            if (!input.checkValidity()) { allValid = false; break; }
+        }
     }
     if (!allValid && typeof form.reportValidity === 'function') { form.reportValidity(); }
+    
+    // Restore required attributes after validation check
+    const allRequiredInPage = currentPage.querySelectorAll('[data-required-original]');
+    allRequiredInPage.forEach(inp => inp.setAttribute('required', ''));
+
     return allValid;
 }
 
+
 function navigate(direction) {
-    if (direction > 0 && !validatePage(currentPageIndex)) { return; }
+    if (direction > 0) {
+      const currentPageElem = pages[currentPageIndex];
+      const form = document.getElementById('clone-form');
+
+      // Temporarily mark all inputs on the current page to check their validity
+      const inputsToCheck = currentPageElem.querySelectorAll('input, select, textarea');
+      let pageIsValid = true;
+      
+      for(const input of inputsToCheck) {
+        if(input.hasAttribute('required') && !input.checkValidity()){
+           pageIsValid = false;
+           // Trigger browser's native validation UI
+           form.reportValidity(); 
+           break;
+        }
+      }
+      
+      if(!pageIsValid){
+        return; // Stop navigation if page is invalid
+      }
+    }
+
     const newIndex = currentPageIndex + direction;
     if (newIndex >= 0 && newIndex < pages.length) {
         currentPageIndex = newIndex;
