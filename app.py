@@ -13,7 +13,7 @@ Production (Railway / Render / Heroku) uyumlu.
   - FIX: Çoktan seçmeli seçeneklerin (radyo düğmeleri) tekrar tıklanarak seçiminin kaldırılması sağlandı.
   - FIX: Kısaltılmış 'forms.gle' linklerini takip ederek ana formu bulur.
   - FIX: Metin başlığı olmayan (sadece görsel/video içeren) soruların çökmesini engeller.
-  - FEATURE: Google Formlar'daki "Bölüm" (Section) mantığını çok sayfalı form olarak uygular.
+  - FIX: Google Formlar'daki "Bölüm" mantığı artık doğru şekilde çalışıyor ve sadece gerçek bölümleri sayfa olarak ayırıyor.
 """
 
 import os
@@ -25,7 +25,7 @@ from bs4 import BeautifulSoup
 from flask import Flask, request, render_template_string, send_file, session
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", "dev-fallback-key")  # .env yoksa fallback
+app.secret_key = os.environ.get("SECRET_KEY", "dev-fallback-key")
 
 def get_inner_html(element):
     """Bir BeautifulSoup elementinin iç HTML'ini string olarak döndürür."""
@@ -34,11 +34,10 @@ def get_inner_html(element):
     return "".join(map(str, element.contents)).strip()
 
 def analyze_google_form(url: str):
-    """Google Form URL'sini parse ederek çok sayfalı yapı, zengin metin ve görselleri içeren form yapısını döndürür."""
+    """Google Form URL'sini parse ederek DOĞRU çok sayfalı yapı, zengin metin ve görselleri içeren form yapısını döndürür."""
     try:
         headers = {
-            'User-Agent': ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-                           'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36')
+            'User-Agent': ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36')
         }
         if "forms.gle/" in url:
             head_response = requests.head(url, allow_redirects=True, timeout=10, headers=headers)
@@ -77,22 +76,14 @@ def analyze_google_form(url: str):
                             if entry_id_part.isdigit():
                                 current_page.append({
                                     'text': 'E-posta', 'description': 'Lütfen geçerli bir e-posta adresi girin.',
-                                    'type': 'E-posta', 'entry_id': f'entry.{entry_id_part}',
-                                    'required': True, 'image_url': None
+                                    'type': 'E-posta', 'entry_id': f'entry.{entry_id_part}', 'required': True, 'image_url': None
                                 })
                     except Exception: pass
 
                 for q_data in question_list:
                     try:
-                        q_type = q_data[3]
-                        
-                        # Bölüm (Section) başlangıcını tespit et
-                        if q_type == 6:
-                            if current_page: # Eğer mevcut sayfada sorular varsa, bu sayfayı bitir
-                                form_data['pages'].append(current_page)
-                            current_page = [] # Yeni bir sayfa başlat
-
                         item_id = q_data[0]
+                        q_type = q_data[3]
                         question = {'image_url': None}
                         item_container = soup.find('div', {'data-item-id': str(item_id)})
                         
@@ -100,8 +91,8 @@ def analyze_google_form(url: str):
                         q_desc_html = q_data[2] if len(q_data) > 2 and q_data[2] else ""
                         
                         if item_container:
-                            title_elem = item_container.find(class_='SajZGc') # Daha genel bir class
-                            desc_elem = item_container.find(class_='OIC90c') # Daha genel bir class
+                            title_elem = item_container.find(class_='SajZGc')
+                            desc_elem = item_container.find(class_='OIC90c')
                             if title_elem: q_text_html = get_inner_html(title_elem)
                             if desc_elem: q_desc_html = get_inner_html(desc_elem)
                             img_elem = item_container.select_one('.y6GzNb img')
@@ -110,15 +101,13 @@ def analyze_google_form(url: str):
                         question['text'] = q_text_html
                         question['description'] = q_desc_html
 
-                        if q_type == 6:
-                            question['type'] = 'Başlık'
-                            current_page.append(question)
+                        if q_data[4] is None:
+                            # Bu muhtemelen sadece video/resim gibi bir öğedir, soru değildir.
+                            current_page.append({'type': 'Media', 'text': q_text_html, 'description': q_desc_html, 'image_url': question['image_url']})
                             continue
 
-                        if q_data[4] is None: continue
-
-                        if q_type == 7:
-                            question['type'] = 'Çoktan Seçmeli Tablo'
+                        if q_type == 6: question['type'] = 'Başlık'
+                        elif q_type == 7:
                             rows_data = q_data[4]
                             if not (isinstance(rows_data, list) and rows_data): continue
                             first_row = rows_data[0]
@@ -126,59 +115,68 @@ def analyze_google_form(url: str):
                             question['required'] = bool(first_row[2])
                             question['cols'] = [c[0] for c in first_row[1]]
                             question['rows'] = [{'text': r[3][0], 'entry_id': f"entry.{r[0]}"} for r in rows_data]
-                            current_page.append(question)
-                            continue
-                        
-                        q_info = q_data[4][0]
-                        question['entry_id'] = f"entry.{q_info[0]}"
-                        question['required'] = bool(q_info[2])
+                        else:
+                            q_info = q_data[4][0]
+                            question['entry_id'] = f"entry.{q_info[0]}"
+                            question['required'] = bool(q_info[2])
 
-                        if q_type == 0: question['type'] = 'Kısa Yanıt'
-                        elif q_type == 1: question['type'] = 'Paragraf'
-                        elif q_type in (2, 4):
-                            question['options'] = []
-                            question['has_other'] = False
-                            if q_info[1]:
-                                option_html_elements = item_container.select('.docssharedWizToggleLabeledContainer') if item_container else []
-                                for i, opt in enumerate(q_info[1]):
-                                    if len(opt) > 4 and opt[4]: question['has_other'] = True; continue
-                                    if not opt[0]: continue
-                                    opt_image_url = None
-                                    if i < len(option_html_elements):
-                                        img_tag = option_html_elements[i].select_one('.LAANW img.QU5LQc')
-                                        if img_tag and img_tag.has_attr('src'): opt_image_url = img_tag.get('src')
-                                    question['options'].append({'text': opt[0], 'image_url': opt_image_url})
-                            question['type'] = 'Çoktan Seçmeli' if q_type == 2 else 'Onay Kutuları'
-                        elif q_type == 3:
-                            question['type'] = 'Açılır Liste'
-                            question['options'] = [o[0] for o in q_info[1] if o[0]]
-                        elif q_type == 5:
-                            question['type'] = 'Doğrusal Ölçek'
-                            question['options'] = [o[0] for o in q_info[1]]
-                            question['labels'] = q_info[3] if len(q_info) > 3 and q_info[3] else ["", ""]
-                        elif q_type == 18:
-                            question['type'] = 'Derecelendirme'
-                            question['options'] = [str(o[0]) for o in q_info[1]]
-                        elif q_type == 9: question['type'] = 'Tarih'
-                        elif q_type == 10: question['type'] = 'Saat'
-                        else: continue
+                            if q_type == 0: question['type'] = 'Kısa Yanıt'
+                            elif q_type == 1: question['type'] = 'Paragraf'
+                            elif q_type in (2, 4):
+                                question['options'] = []
+                                question['has_other'] = False
+                                if q_info[1]:
+                                    option_html_elements = item_container.select('.docssharedWizToggleLabeledContainer') if item_container else []
+                                    for i, opt in enumerate(q_info[1]):
+                                        if len(opt) > 4 and opt[4]: question['has_other'] = True; continue
+                                        if not opt[0]: continue
+                                        opt_image_url = None
+                                        if i < len(option_html_elements):
+                                            img_tag = option_html_elements[i].select_one('.LAANW img.QU5LQc')
+                                            if img_tag and img_tag.has_attr('src'): opt_image_url = img_tag.get('src')
+                                        question['options'].append({'text': opt[0], 'image_url': opt_image_url})
+                                question['type'] = 'Çoktan Seçmeli' if q_type == 2 else 'Onay Kutuları'
+                            elif q_type == 3:
+                                question['type'] = 'Açılır Liste'
+                                question['options'] = [o[0] for o in q_info[1] if o[0]]
+                            elif q_type == 5:
+                                question['type'] = 'Doğrusal Ölçek'
+                                question['options'] = [o[0] for o in q_info[1]]
+                                question['labels'] = q_info[3] if len(q_info) > 3 and q_info[3] else ["", ""]
+                            elif q_type == 18:
+                                question['type'] = 'Derecelendirme'
+                                question['options'] = [str(o[0]) for o in q_info[1]]
+                            elif q_type == 9: question['type'] = 'Tarih'
+                            elif q_type == 10: question['type'] = 'Saat'
+                            else: continue
+                        
                         current_page.append(question)
+
+                        # ================== BAŞLANGIÇ: YENİ BÖLÜM MANTIĞI ==================
+                        # Bir sorunun sonunda sayfa geçişi olup olmadığını kontrol et.
+                        # Gerçek bir "Bölüm" ayıracı, verinin 12. indeksinde bu bilgiyi taşır.
+                        is_page_break = len(q_data) > 12 and q_data[12]
+                        if is_page_break:
+                            form_data['pages'].append(current_page)
+                            current_page = []
+                        # ================== BİTİŞ: YENİ BÖLÜM MANTIĞI ==================
+
                     except (IndexError, TypeError, KeyError) as e:
                         print(f"DEBUG: Bir soru işlenirken hata oluştu (ID: {q_data[0]}). Soru atlanıyor. Hata: {e}")
                         continue
                 
-                if current_page: # Son sayfayı da ekle
+                if current_page: # Döngü bittiğinde kalan son sayfayı da ekle
                     form_data['pages'].append(current_page)
                 
-                # Eğer hiç bölüm yoksa ve sadece sorular varsa, onları tek bir sayfaya koy
-                if not form_data['pages'] and any(q['type'] != 'Başlık' for q in current_page):
+                # Eğer hiçbir sayfa ayracı bulunamadıysa, tüm soruları tek bir sayfaya koy.
+                if not form_data['pages'] and current_page:
                      form_data['pages'].append(current_page)
 
                 break
             except (json.JSONDecodeError, IndexError, TypeError) as e:
                 return {"error": f"Form verileri ayrıştırılamadı (format değişmiş olabilir). Hata: {e}"}
 
-    if not form_data['pages']:
+    if not form_data['pages'] or not form_data['pages'][0]:
         return {"error": "Formda analiz edilecek soru veya bölüm bulunamadı."}
     return form_data
 
@@ -245,7 +243,7 @@ input[type=radio],input[type=checkbox]{flex-shrink:0;margin-top:0.3rem;width:1.1
 .btn-secondary:hover {
     background-color: #5c636a; border-color: #565e64;
 }
-.navigation-buttons { display: flex; justify-content: space-between; gap: 1rem; }
+.navigation-buttons { display: flex; justify-content: space-between; gap: 1rem; margin-top: 2rem; }
 .navigation-buttons .btn { width: auto; flex-grow: 1; }
 .error-message{background:#f8d7da;color:#58151c;border: 1px solid #f1aeb5;padding:1rem;border-radius:6px;text-align:center}
 .grid-table{width:100%;border-collapse:collapse;margin-top:.5rem}
@@ -288,6 +286,12 @@ input[type=radio],input[type=checkbox]{flex-shrink:0;margin-top:0.3rem;width:1.1
             {% if q.description %}<div class="section-description">{{ q.description | safe }}</div>{% endif %}
             {% if q.image_url %}<div class="form-image-container"><img src="{{ q.image_url }}" alt="Başlık Görseli"></div>{% endif %}
         </div>
+        {% elif q.type == 'Media' %}
+             <div class="title-description-block">
+                {% if q.text %}<div class="section-title">{{ q.text | safe }}</div>{% endif %}
+                {% if q.description %}<div class="section-description">{{ q.description | safe }}</div>{% endif %}
+                {% if q.image_url %}<div class="form-image-container"><img src="{{ q.image_url }}" alt="Medya İçeriği"></div>{% endif %}
+            </div>
         {% else %}
         <div class="form-group">
             <div class="question-label">{{ q.text | safe }} {% if q.required %}<span class="required-star">*</span>{% endif %}</div>
@@ -325,13 +329,13 @@ input[type=radio],input[type=checkbox]{flex-shrink:0;margin-top:0.3rem;width:1.1
         </div>
         {% endif %}
     {% endfor %}
-    <div class="navigation-buttons">
-        {% if not loop.first %}<button type="button" class="btn btn-secondary" onclick="navigate(-1)">Geri</button>{% endif %}
-        {% if not loop.last %}<button type="button" class="btn" onclick="navigate(1)">Sonraki</button>
-        {% else %}<button type="submit" class="btn">Gönder ve Excel Olarak İndir</button>{% endif %}
-    </div>
 </div>
 {% endfor %}
+<div class="navigation-buttons">
+    <button type="button" class="btn btn-secondary" id="back-button" onclick="navigate(-1)" style="display: none;">Geri</button>
+    <button type="button" class="btn" id="next-button" onclick="navigate(1)">Sonraki</button>
+    <button type="submit" class="btn" id="submit-button" style="display: none;">Gönder ve Excel Olarak İndir</button>
+</div>
 </form>
 {% endif %}
 </div>
@@ -349,54 +353,47 @@ document.addEventListener('DOMContentLoaded', () => {
         textInput.addEventListener('focus', checkAssociatedControl);
     });
 });
-/* ================== BAŞLANGIÇ: BÖLÜM NAVİGASYON SCRİPTİ ================== */
 let currentPageIndex = 0;
 const pages = document.querySelectorAll('.page');
+const backButton = document.getElementById('back-button');
+const nextButton = document.getElementById('next-button');
+const submitButton = document.getElementById('submit-button');
+
+function updateButtons() {
+    backButton.style.display = currentPageIndex > 0 ? 'inline-block' : 'none';
+    nextButton.style.display = currentPageIndex < pages.length - 1 ? 'inline-block' : 'none';
+    submitButton.style.display = currentPageIndex === pages.length - 1 ? 'inline-block' : 'none';
+}
 
 function showPage(index) {
     pages.forEach((page, i) => {
         page.style.display = i === index ? 'block' : 'none';
     });
-    window.scrollTo(0, 0); // Sayfa değiştiğinde en üste git
+    updateButtons();
+    window.scrollTo(0, 0);
 }
 
 function validatePage(pageIndex) {
     const currentPage = pages[pageIndex];
     if (!currentPage) return false;
-    
+    const form = document.getElementById('clone-form');
     const requiredInputs = currentPage.querySelectorAll('[required]');
-    let firstInvalidElement = null;
-
+    let allValid = true;
     for (const input of requiredInputs) {
-        if (input.type === 'radio') {
-            const radioGroup = currentPage.querySelectorAll(`input[name="${input.name}"]`);
-            if (!Array.from(radioGroup).some(radio => radio.checked)) {
-                if (!firstInvalidElement) firstInvalidElement = input;
-            }
-        } else {
-            if (!input.value.trim()) {
-                 if (!firstInvalidElement) firstInvalidElement = input;
-            }
+        if (!input.checkValidity()) {
+            allValid = false;
+            break;
         }
     }
-    
-    if (firstInvalidElement) {
-        // Formu submit etmeye çalışarak tarayıcının kendi validasyon mesajını tetikle
-        const form = document.getElementById('clone-form');
-        if (form && typeof form.reportValidity === 'function') {
-             form.reportValidity();
-        } else {
-             alert('Lütfen tüm gerekli alanları doldurun.');
-        }
-        firstInvalidElement.focus();
-        return false;
+    if (!allValid && typeof form.reportValidity === 'function') {
+        form.reportValidity();
     }
-    return true;
+    return allValid;
 }
 
 function navigate(direction) {
     if (direction > 0 && !validatePage(currentPageIndex)) {
-        return; // Eğer ileri gidiyorsak ve sayfa geçerli değilse, ilerleme
+        return;
     }
     const newIndex = currentPageIndex + direction;
     if (newIndex >= 0 && newIndex < pages.length) {
@@ -404,7 +401,9 @@ function navigate(direction) {
         showPage(currentPageIndex);
     }
 }
-/* ================== BİTİŞ: BÖLÜM NAVİGASYON SCRİPTİ ================== */
+if(pages.length > 0) {
+    showPage(0);
+}
 </script>
 </body></html>
 """
@@ -431,15 +430,13 @@ def submit():
     user_answers = request.form
     results = []
     
-    # Artık form yapısı sayfalara ayrıldığı için, tüm sayfalardaki soruları tek bir listede toplayalım.
     all_questions = []
     for page in form_structure.get('pages', []):
         all_questions.extend(page)
 
     for question in all_questions:
-        q_type = question['type']
-        
-        if q_type == 'Başlık':
+        q_type = question.get('type')
+        if not q_type or q_type in ['Başlık', 'Media']:
             continue
 
         q_text_html = question.get('text') or ''
@@ -460,7 +457,7 @@ def submit():
             continue
 
         entry = question.get('entry_id')
-        if not entry: continue # Sorunun entry_id'si yoksa atla
+        if not entry: continue
         
         answer_str = "Boş Bırakıldı"
         if q_type == 'Onay Kutuları':
