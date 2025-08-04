@@ -23,7 +23,6 @@ from flask import Flask, request, render_template_string, send_file, session
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-fallback-key")
 
-# === KESİN ÇÖZÜM: KULLANICININ SAĞLADIĞI, decode_contents() KULLANAN NİHAİ FONKSİYON ===
 def get_inner_html(element):
     """
     HTML içerikleri biçimlendirme etiketleriyle birlikte döner (b, i, u, a, ul, ol, li).
@@ -73,9 +72,9 @@ def analyze_google_form(url: str):
     form_data = {"pages": []}
     
     title_div = soup.find('div', class_='F9yp7e')
-    form_data['title'] = get_inner_html(title_div) if title_div else "İsimsiz Form"
+    form_data['title'] = get_inner_html(title_div.clone()) if title_div else "İsimsiz Form"
     desc_div = soup.find('div', class_='cBGGJ')
-    form_data['description'] = get_inner_html(desc_div) if desc_div else ""
+    form_data['description'] = get_inner_html(desc_div.clone()) if desc_div else ""
 
 
     for script in soup.find_all('script'):
@@ -83,7 +82,7 @@ def analyze_google_form(url: str):
             try:
                 raw = script.string.replace('var FB_PUBLIC_LOAD_DATA_ = ', '').rstrip(';')
                 data = json.loads(raw)
-                question_list = data[1][1]
+                question_list = data
                 
                 current_page = []
 
@@ -93,7 +92,7 @@ def analyze_google_form(url: str):
                         parent = email_div.find_parent('div', {'jsmodel': 'CP1oW'})
                         if parent and parent.has_attr('data-params'):
                             p = parent['data-params']
-                            entry_id_part = p.split(',')[-1].split('"')[0]
+                            entry_id_part = p.split(',')[-1].split('"')
                             if entry_id_part.isdigit():
                                 current_page.append({
                                     'text': 'E-posta', 'description': 'Lütfen geçerli bir e-posta adresi girin.',
@@ -103,64 +102,65 @@ def analyze_google_form(url: str):
 
                 for q_data in question_list:
                     try:
-                        item_id = q_data[0]
-                        q_type = q_data[3]
+                        item_id = q_data
+                        q_type = q_data
                         question = {'image_url': None}
                         item_container = soup.find('div', {'data-item-id': str(item_id)})
                         
                         q_text_element = item_container.select_one('.M7eMe') if item_container else None
                         q_desc_element = item_container.select_one('.OIC90c') if item_container else None
                         
-                        question['text'] = get_inner_html(q_text_element.clone()) if q_text_element else q_data[1]
-                        question['description'] = get_inner_html(q_desc_element.clone()) if q_desc_element else (q_data[2] if len(q_data) > 2 and q_data[2] else "")
+                        # .clone() metodu, orijinal soup nesnesinin değiştirilmesini önler.
+                        question['text'] = get_inner_html(q_text_element.clone()) if q_text_element else q_data
+                        question['description'] = get_inner_html(q_desc_element.clone()) if q_desc_element else (q_data if len(q_data) > 2 and q_data else "")
                         
                         if item_container:
                             img_elem = item_container.select_one('.y6GzNb img')
                             if img_elem and img_elem.has_attr('src'): question['image_url'] = img_elem.get('src')
                         
-                        if q_data[4] is None:
+                        if q_data is None:
                             current_page.append({'type': 'Media', 'text': question['text'], 'description': question['description'], 'image_url': question['image_url']})
                             continue
 
                         if q_type == 7:
-                            rows_data = q_data[4]
+                            rows_data = q_data
                             if not (isinstance(rows_data, list) and rows_data): continue
-                            first_row = rows_data[0]
-                            question['type'] = 'Onay Kutusu Tablosu' if len(first_row) > 11 and first_row[11] and first_row[11][0] else 'Çoktan Seçmeli Tablo'
-                            question['required'] = bool(first_row[2])
-                            question['cols'] = [c[0] for c in first_row[1]]
-                            question['rows'] = [{'text': r[3][0], 'entry_id': f"entry.{r[0]}"} for r in rows_data]
+                            first_row = rows_data
+                            question['type'] = 'Onay Kutusu Tablosu' if len(first_row) > 11 and first_row and first_row else 'Çoktan Seçmeli Tablo'
+                            question['required'] = bool(first_row)
+                            question['cols'] = [c for c in first_row]
+                            question['rows'] = [{'text': r, 'entry_id': f"entry.{r}"} for r in rows_data]
                         else:
-                            q_info = q_data[4][0]
-                            question['entry_id'] = f"entry.{q_info[0]}"
-                            question['required'] = bool(q_info[2])
+                            q_info = q_data
+                            question['entry_id'] = f"entry.{q_info}"
+                            question['required'] = bool(q_info)
 
                             if q_type == 0: question['type'] = 'Kısa Yanıt'
                             elif q_type == 1: question['type'] = 'Paragraf'
                             elif q_type in (2, 4):
                                 question['options'] = []
                                 question['has_other'] = False
-                                if q_info[1]:
+                                if q_info:
                                     option_html_elements = item_container.select('.docssharedWizToggleLabeledContainer') if item_container else []
-                                    for i, opt in enumerate(q_info[1]):
-                                        if len(opt) > 4 and opt[4]: question['has_other'] = True; continue
-                                        if not opt[0] and opt[0] != "": continue
+                                    for i, opt in enumerate(q_info):
+                                        if len(opt) > 4 and opt: question['has_other'] = True; continue
+                                        if not opt and opt != "": continue
                                         opt_image_url = None
                                         if i < len(option_html_elements):
                                             img_tag = option_html_elements[i].select_one('.LAANW img.QU5LQc')
                                             if img_tag and img_tag.has_attr('src'): opt_image_url = img_tag.get('src')
-                                        question['options'].append({'text': opt[0], 'image_url': opt_image_url})
+                                        question['options'].append({'text': opt, 'image_url': opt_image_url})
                                 question['type'] = 'Çoktan Seçmeli' if q_type == 2 else 'Onay Kutuları'
                             elif q_type == 3:
                                 question['type'] = 'Açılır Liste'
-                                question['options'] = [o[0] for o in q_info[1] if o[0]]
+                                question['options'] = [o for o in q_info if o]
                             elif q_type == 5:
                                 question['type'] = 'Doğrusal Ölçek'
-                                question['options'] = [o[0] for o in q_info[1]]
-                                question['labels'] = q_info[3] if len(q_info) > 3 and q_info[3] else ["", ""]
+                                question['options'] = [o for o in q_info]
+                                question['labels'] = q_info if len(q_info) > 3 and q_info else ["", ""]
                             elif q_type == 18:
                                 question['type'] = 'Derecelendirme'
-                                question['options'] = [str(o[0]) for o in q_info[1]]
+                                question['options'] = [str(o) for o in q_info]
                             elif q_type == 9: question['type'] = 'Tarih'
                             elif q_type == 10: question['type'] = 'Saat'
                             elif q_type == 6: question['type'] = 'Başlık'
@@ -168,13 +168,13 @@ def analyze_google_form(url: str):
                         
                         current_page.append(question)
 
-                        is_page_break = len(q_data) > 12 and q_data[12]
+                        is_page_break = len(q_data) > 12 and q_data
                         if is_page_break:
                             form_data['pages'].append(current_page)
                             current_page = []
 
                     except (IndexError, TypeError, KeyError) as e:
-                        print(f"DEBUG: Bir soru işlenirken hata oluştu (ID: {q_data[0]}). Soru atlanıyor. Hata: {e}")
+                        print(f"DEBUG: Bir soru işlenirken hata oluştu (ID: {q_data}). Soru atlanıyor. Hata: {e}")
                         continue
                 
                 if current_page:
@@ -187,7 +187,7 @@ def analyze_google_form(url: str):
             except (json.JSONDecodeError, IndexError, TypeError) as e:
                 return {"error": f"Form verileri ayrıştırılamadı (format değişmiş olabilir). Hata: {e}"}
 
-    if not form_data['pages'] or not form_data['pages'][0]:
+    if not form_data['pages'] or not form_data['pages']:
         return {"error": "Formda analiz edilecek soru veya bölüm bulunamadı."}
     return form_data
 
@@ -324,7 +324,7 @@ input[type=radio],input[type=checkbox]{flex-shrink:0;margin-top:0.3rem;width:1.1
             {% elif q.type == 'Açılır Liste' %}
             <select name="{{ q.entry_id }}" {% if q.required %}required{% endif %}><option value="" disabled selected>Seçin...</option>{% for opt in q.options %}<option value="{{ opt }}">{{ opt | safe }}</option>{% endfor %}</select>
             {% elif q.type == 'Doğrusal Ölçek' %}
-            <div class="radio-group" style="flex-direction:row;justify-content:space-around;align-items:center;"><span>{{ q.labels[0] | safe }}</span>{% for opt in q.options %} <label style="flex-direction:column;align-items:center;"><span>{{ opt | safe }}</span><input type="radio" name="{{ q.entry_id }}" value="{{ opt }}" {% if q.required %}required{% endif %}></label> {% endfor %}<span>{{ q.labels[1] | safe }}</span></div>
+            <div class="radio-group" style="flex-direction:row;justify-content:space-around;align-items:center;"><span>{{ q.labels | safe }}</span>{% for opt in q.options %} <label style="flex-direction:column;align-items:center;"><span>{{ opt | safe }}</span><input type="radio" name="{{ q.entry_id }}" value="{{ opt }}" {% if q.required %}required{% endif %}></label> {% endfor %}<span>{{ q.labels | safe }}</span></div>
             {% elif q.type == 'Derecelendirme' %}
             <div class="rating-group">{% for opt in q.options | reverse %} <input type="radio" id="star{{ opt }}-{{ q.entry_id }}" name="{{ q.entry_id }}" value="{{ opt }}" {% if q.required %}required{% endif %}><label for="star{{ opt }}-{{ q.entry_id }}">★</label> {% endfor %}</div>
             {% elif q.type == 'Tarih' %} <input type="date" name="{{ q.entry_id }}" {% if q.required %}required{% endif %}>
@@ -494,6 +494,7 @@ def submit():
                      as_attachment=True,
                      download_name='form_cevaplari.xlsx')
 
+# Hatanın düzeltildiği kısım burasıdır
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=False)```
+    app.run(host='0.0.0.0', port=port, debug=False)
