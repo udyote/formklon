@@ -10,10 +10,12 @@ from flask import Flask, request, render_template_string, send_file, session
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-fallback-key")
 
+
 def get_inner_html(element):
     if not element:
         return ""
     return "".join(map(str, element.contents)).strip()
+
 
 def analyze_google_form(url: str):
     try:
@@ -98,21 +100,38 @@ def analyze_google_form(url: str):
                         elif q_type in (2, 4):
                             question['options'] = []
                             question['has_other'] = False
+                            option_html_elements = item_container.select('.docssharedWizToggleLabeledContainer') if item_container else []
                             if q_info[1]:
-                                option_html_elements = item_container.select('.docssharedWizToggleLabeledContainer') if item_container else []
                                 for i, opt in enumerate(q_info[1]):
                                     if len(opt) > 4 and opt[4]:
                                         question['has_other'] = True
                                         continue
                                     if not opt[0]:
                                         continue
-                                    opt_text = opt[0]
+
+                                    # Biçimlendirilmiş HTML'yi DOM'dan al (varsa)
+                                    opt_text_html = None
+                                    if i < len(option_html_elements):
+                                        opt_html_elem = option_html_elements[i]
+                                        copy_elem = BeautifulSoup(str(opt_html_elem), 'html.parser')
+                                        for inp in copy_elem.find_all('input'):
+                                            inp.decompose()
+                                        opt_text_html = get_inner_html(copy_elem).strip()
+                                    if not opt_text_html:
+                                        opt_text_html = opt[0]
+
+                                    # Görsel varsa
                                     opt_image_url = None
                                     if i < len(option_html_elements):
-                                        img_tag = option_html_elements[i].select_one('.LAANW img.QU5LQc')
+                                        img_tag = option_html_elements[i].select_one('img')
                                         if img_tag and img_tag.has_attr('src'):
                                             opt_image_url = img_tag.get('src')
-                                    question['options'].append({'text': opt_text, 'image_url': opt_image_url})
+
+                                    question['options'].append({
+                                        'text': opt_text_html,
+                                        'plain': opt[0],
+                                        'image_url': opt_image_url
+                                    })
                             question['type'] = 'Çoktan Seçmeli' if q_type == 2 else 'Onay Kutuları'
                         elif q_type == 3:
                             question['type'] = 'Açılır Liste'
@@ -160,6 +179,7 @@ def analyze_google_form(url: str):
     if not form_data['questions']:
         return {"error": "Formda analiz edilecek soru veya içerik bulunamadı."}
     return form_data
+
 
 HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="tr">
@@ -256,12 +276,12 @@ input[type=radio],input[type=checkbox]{flex-shrink:0;margin-top:0.3rem;width:1.1
                             <div class="radio-group">
                                 {% for opt in q.options %}
                                     <label>
-                                        <input type="radio" name="{{ q.entry_id }}" value="{{ opt.text }}" {% if q.required %}required{% endif %}>
+                                        <input type="radio" name="{{ q.entry_id }}" value="{{ opt.plain if opt.plain else opt.text }}" {% if q.required %}required{% endif %}>
                                         <div class="option-content">
                                             {% if opt.image_url %}
-                                                <div class="option-image-container"><img src="{{ opt.image_url }}" alt="{{ opt.text }}"></div>
+                                                <div class="option-image-container"><img src="{{ opt.image_url }}" alt="{{ opt.plain if opt.plain else '' }}"></div>
                                             {% endif %}
-                                            <span class="option-text">{{ opt.text }}</span>
+                                            <span class="option-text">{{ opt.text | safe }}</span>
                                         </div>
                                     </label>
                                 {% endfor %}
@@ -279,12 +299,12 @@ input[type=radio],input[type=checkbox]{flex-shrink:0;margin-top:0.3rem;width:1.1
                             <div class="checkbox-group">
                                 {% for opt in q.options %}
                                     <label>
-                                        <input type="checkbox" name="{{ q.entry_id }}" value="{{ opt.text }}">
+                                        <input type="checkbox" name="{{ q.entry_id }}" value="{{ opt.plain if opt.plain else opt.text }}">
                                         <div class="option-content">
                                             {% if opt.image_url %}
-                                                <div class="option-image-container"><img src="{{ opt.image_url }}" alt="{{ opt.text }}"></div>
+                                                <div class="option-image-container"><img src="{{ opt.image_url }}" alt="{{ opt.plain if opt.plain else '' }}"></div>
                                             {% endif %}
-                                            <span class="option-text">{{ opt.text }}</span>
+                                            <span class="option-text">{{ opt.text | safe }}</span>
                                         </div>
                                     </label>
                                 {% endfor %}
@@ -377,6 +397,7 @@ def index():
         return render_template_string(HTML_TEMPLATE, form_data=form_data)
     return render_template_string(HTML_TEMPLATE)
 
+
 @app.route('/submit', methods=['POST'])
 def submit():
     form_structure = session.get('form_structure')
@@ -449,6 +470,7 @@ def submit():
         as_attachment=True,
         download_name='form_cevaplari.xlsx'
     )
+
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
