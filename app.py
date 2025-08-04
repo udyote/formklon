@@ -75,9 +75,12 @@ def analyze_google_form(url: str):
 
                         item_container = soup.find('div', {'data-item-id': str(item_id)})
 
+                        # Önce JSON'dan gelen ham metni al, bu bizim fallback'imiz olacak.
                         q_text_html = q_data[1]
                         q_desc_html = q_data[2] if len(q_data) > 2 and q_data[2] else ""
                         
+                        # Sonra, zengin metin (bold, link vs.) içeren gerçek HTML'i parse etmeye çalış.
+                        # Bu, formatlamanın korunmasını sağlar.
                         if item_container:
                             title_elem = item_container.find(class_='meSK8 M7eMe')
                             desc_elem = item_container.find(class_='spb5Rd OIC90c')
@@ -109,11 +112,9 @@ def analyze_google_form(url: str):
                             question['rows'] = [{'text': r[3][0], 'entry_id': f"entry.{r[0]}"} for r in rows_data]
                             form_data['questions'].append(question)
                             continue
-                        
-                        # Bazen q_data[4] 'None' olabilir (örn. video eklenmişse), bu durumu kontrol et.
+
+                        # Düzeltme: Bazen video gibi öğelerin soru verisi (q_data[4]) olmaz.
                         if q_data[4] is None:
-                            # Bu öğenin bir soru olmadığını varsay ve atla.
-                            # 'question' nesnesini listeye eklemeden döngüye devam et.
                             continue
 
                         q_info = q_data[4][0]
@@ -442,15 +443,16 @@ def submit():
         if q_type == 'Başlık':
             continue
 
-        # ================== BAŞLANGIÇ: HATA DÜZELTMESİ ==================
-        # Bazı form elemanlarının (örn: sadece resim/video içeren sorular) başlık metni ('text') olmayabilir.
-        # Bu durumda question['text'] 'None' olur ve BeautifulSoup'a gönderildiğinde hataya neden olur.
-        # Bu kontrol, 'None' değeri yerine boş bir string ('') kullanarak hatayı önler.
-        q_text_html = question.get('text') or ''
+        # ================== BAŞLANGIÇ: HATA DÜZELTMESİ (HEM ÇÖKME HEM FORMATLAMA) ==================
+        # 1. Hata kontrolü: 'text' anahtarı olmayabilir veya 'None' olabilir.
+        q_text_html = question.get('text') or '' 
+        
+        # 2. Excel için DÜZ METİN oluşturma: Zengin metni (HTML) düz metne çevir.
         q_text_plain = BeautifulSoup(q_text_html, "html.parser").get_text(separator=" ", strip=True)
-        # Eğer soru metni yoksa (örneğin sadece bir görsel varsa), Excel'de daha anlaşılır olması için bir yer tutucu metin ekleyelim.
+        
+        # 3. Anlaşılırlık: Eğer soru metni yoksa (örn. sadece bir resim), Excel için bir yer tutucu oluştur.
         if not q_text_plain:
-            q_text_plain = f"[İsimsiz Soru - Tip: {q_type}]"
+            q_text_plain = f"[İsimsiz Medya/Soru - Tip: {q_type}]"
         # ================== BİTİŞ: HATA DÜZELTMESİ ==================
 
         if 'Tablo' in q_type:
@@ -487,7 +489,6 @@ def submit():
         else:
             raw_answer = user_answers.get(entry, "")
             answer_str = raw_answer if raw_answer.strip() != "" else "Boş Bırakıldı"
-
 
         results.append({"Soru": q_text_plain, "Soru Tipi": q_type, "Cevap": answer_str})
 
