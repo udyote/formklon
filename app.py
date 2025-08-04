@@ -211,7 +211,7 @@ def analyze_google_form(url: str):
 
 
 HTML_TEMPLATE = """<!DOCTYPE html>
-<html lang="tr"><head><meta charset="UTF-8"><title>Google Form Klonlayıcı</title>
+<html lang="tr"><head><meta charset="UTF-8"><title>Google Form Klonlayıcı- Eski Sürum</title>
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
 <style>
 body{font-family:Arial,sans-serif;background:#f4f7fa;margin:0;padding:2rem;display:flex;justify-content:center}
