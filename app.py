@@ -38,6 +38,20 @@ def analyze_google_form(url: str):
             'User-Agent': ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
                            'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36')
         }
+
+        # ================== BAŞLANGIÇ: YENİ EKLENEN KOD (Kısaltılmış Link Çözücü) ==================
+        # Eğer URL kısaltılmış bir 'forms.gle' linki ise, önce gerçek adresi bul.
+        if "forms.gle/" in url:
+            try:
+                # 'allow_redirects=True' (varsayılan) ile istek göndererek yönlendirmeyi takip et.
+                # 'timeout' ekleyerek sonsuz döngü veya yavaş bağlantıları önle.
+                head_response = requests.head(url, allow_redirects=True, timeout=10, headers=headers)
+                head_response.raise_for_status()
+                url = head_response.url  # Yönlendirmenin sonundaki nihai URL'yi al.
+            except requests.exceptions.RequestException as e:
+                return {"error": f"Kısaltılmış URL çözülemedi. Linkin çalıştığından emin olun. Hata: {e}"}
+        # ================== BİTİŞ: YENİ EKLENEN KOD ==================
+
         response = requests.get(url, headers=headers, timeout=15)
         response.raise_for_status()
     except requests.exceptions.RequestException as e:
@@ -51,8 +65,6 @@ def analyze_google_form(url: str):
     desc_div = soup.find('div', class_='cBGGJ')
     form_data['description'] = get_inner_html(desc_div) if desc_div else ""
 
-    # Soruların sırası, Google'ın bu script içindeki veri yapısı tarafından belirlenir.
-    # Kod bu sırayı takip eder, bu nedenle klonlanan formun sırası orijinaliyle eşleşir.
     for script in soup.find_all('script'):
         if script.string and 'FB_PUBLIC_LOAD_DATA_' in script.string:
             try:
@@ -68,7 +80,6 @@ def analyze_google_form(url: str):
 
                         item_container = soup.find('div', {'data-item-id': str(item_id)})
 
-                        # HTML'den zengin metin (link, bold vb.) ve ana görseli al
                         q_text_html = q_data[1]
                         q_desc_html = q_data[2] if len(q_data) > 2 and q_data[2] else ""
                         
@@ -172,7 +183,7 @@ def analyze_google_form(url: str):
         return {"error": "Formda analiz edilecek soru veya içerik bulunamadı."}
     return form_data
 
-# ================================== BAŞLANGIÇ: TASARIM GÜNCELLENDİ ==================================
+
 HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="tr"><head><meta charset="UTF-8"><title>Google Form Klonlayıcı</title>
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
@@ -296,7 +307,7 @@ input[type=radio],input[type=checkbox]{flex-shrink:0;margin-top:0.3rem;width:1.1
 <body><div class="container">
 <h1>Google Form Klonlayıcı</h1>
 <form method="post" action="/"><div class="form-group" style="padding:1rem;">
-<input type="text" name="url" placeholder="https://docs.google.com/forms/d/e/..." required>
+<input type="text" name="url" placeholder="https://docs.google.com/forms/d/e/... veya https://forms.gle/..." required>
 <button type="submit" class="btn" style="margin-top:1rem;">Formu Oluştur</button>
 </div></form>
 {% if error %}<div class="error-message">{{ error }}</div>{% endif %}
@@ -374,61 +385,39 @@ input[type=radio],input[type=checkbox]{flex-shrink:0;margin-top:0.3rem;width:1.1
 </form>
 {% endif %}
 </div>
-
-<!-- ================== BAŞLANGIÇ: JAVASCRIPT DÜZELTMELERİ ================== -->
 <script>
 document.addEventListener('DOMContentLoaded', () => {
-    /*
-     * DÜZELTME 1: Radyo düğmelerinin seçiminin kaldırılmasına izin ver.
-     * Kullanıcı, seçili bir radyo düğmesine tekrar tıkladığında seçimin kaldırılmasını istedi.
-     * Bu betik, bu davranışı etkinleştirir.
-     */
     let radioMouseDownChecked;
-
     document.body.addEventListener('mousedown', e => {
-        // Olay hedefi bir radyo düğmesiyse, 'checked' durumunu yakala.
         if (e.target.tagName === 'INPUT' && e.target.type === 'radio') {
             radioMouseDownChecked = e.target.checked;
         }
-    }, true); // Olayın state'i değiştirmesinden önce çalışmasını sağlamak için yakalama fazını kullan
-
+    }, true);
     document.body.addEventListener('click', e => {
-        // Eğer olay hedefi bir radyo düğmesiyse ve mousedown'da zaten işaretliyse
         if (e.target.tagName === 'INPUT' && e.target.type === 'radio' && radioMouseDownChecked) {
-            // bu tıklama seçimi kaldırmalıdır.
             e.target.checked = false;
         }
     });
-
-    /*
-     * DÜZELTME 2: "Diğer" metin alanına yazarken ilgili seçeneği otomatik olarak işaretle.
-     * Kullanıcı, "Diğer" kutusunu işaretlemeden metin girdiğinde, sorunun cevaplanmamış sayılmasını önler.
-     */
     document.querySelectorAll('.other-option-input').forEach(textInput => {
         const checkAssociatedControl = () => {
-            // En yakın üst <label> içindeki ilgili radyo veya onay kutusunu bul.
             const associatedControl = textInput.closest('label').querySelector('input[type=radio], input[type=checkbox]');
             if (associatedControl) {
                 associatedControl.checked = true;
             }
         };
-        // Kullanıcı metin alanına odaklandığında veya yazdığında dinleyiciyi tetikle.
         textInput.addEventListener('input', checkAssociatedControl);
         textInput.addEventListener('focus', checkAssociatedControl);
     });
 });
 </script>
-<!-- ================== BİTİŞ: JAVASCRIPT DÜZELTMELERİ ================== -->
-
 </body></html>
 """
-# =================================== BİTİŞ: TASARIM GÜNCELLENDİ ===================================
 
 @app.route('/', methods=['GET', 'POST'])
 def index():
     if request.method == 'POST':
         url = request.form.get('url', '').strip()
-        if not url or "docs.google.com/forms" not in url:
+        if not url or ("docs.google.com/forms" not in url and "forms.gle" not in url):
             return render_template_string(HTML_TEMPLATE, error="Geçerli bir Google Form URL'si girin.")
         form_data = analyze_google_form(url)
         if "error" in form_data:
@@ -475,7 +464,6 @@ def submit():
             if "__other_option__" in answers:
                 answers.remove("__other_option__")
                 other_txt = user_answers.get(f"{entry}.other_option_response", "").strip()
-                # JavaScript düzeltmesi sayesinde, metin kutusuna yazıldığında __other_option__ seçilecektir.
                 final.append(f"Diğer: {other_txt}" if other_txt else "Diğer (belirtilmemiş)")
             final.extend(answers)
             if final: answer_str = ', '.join(final)
@@ -483,7 +471,6 @@ def submit():
             ans = user_answers.get(entry)
             if ans == "__other_option__":
                 other_txt = user_answers.get(f"{entry}.other_option_response", "").strip()
-                # JavaScript düzeltmesi sayesinde, metin kutusuna yazıldığında ans __other_option__ olacaktır.
                 answer_str = f"Diğer: {other_txt}" if other_txt else "Diğer (belirtilmemiş)"
             elif ans:
                 answer_str = ans
@@ -512,4 +499,4 @@ def submit():
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=False) # Debug'ı production için kapatmak daha iyidir.
+    app.run(host='0.0.0.0', port=port, debug=False)
