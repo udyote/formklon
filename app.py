@@ -1,16 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-Google Form Klonlayıcı - Nihai Sürüm
-Production (Railway / Render / Heroku) uyumlu.
-- SECRET_KEY .env / ortam değişkeninden okunur
-- Gunicorn ile çalıştırılabilir
-- Google Form verisini çekip yeniden oluşturur ve cevapları Excel indirir
-- Zengin Metin Desteği: Başlık/Açıklama, kalın, italik, altı çizili, link ve listeleri tam olarak korur.
-- Medya Desteği: Sorulara ve seçeneklere eklenen görselleri destekler.
-- Doğru Bölümleme: Google Formlar'daki "Bölüm" mantığını çok sayfalı form olarak doğru şekilde uygular.
-- JS sonrası DOM alınması için Playwright ile render edilme (zengin formatlamayı almak için).
-- UX Düzeltmeleri: "Diğer" seçeneği ve radyo düğmesi seçimini kaldırma gibi JS iyileştirmeleri içerir.
-- Kısa Link Desteği: 'forms.gle' linklerini otomatik olarak çözer.
+Google Form Klonlayıcı + Debug Excel
+- Playwright ile JS sonrası DOM alır (bold/italic/link/altı çizili vs. yakalamak için).
+- Normal kullanıcı form klonlama + cevapları Excel indirme işlevi devam eder.
+- /debug?url=... ile formu parse edip soru bazlı formatlama bilgisi içeren ayrı Excel üretir.
 """
 
 import os
@@ -20,9 +13,9 @@ import traceback
 import requests
 import pandas as pd
 from bs4 import BeautifulSoup
-from flask import Flask, request, render_template_string, send_file, session
+from flask import Flask, request, render_template_string, send_file, session, redirect, url_for
 
-# Playwright import, olmazsa fallback ile devam edecek
+# Playwright import, fallback olacak şekilde
 try:
     from playwright.sync_api import sync_playwright, TimeoutError as PWTimeoutError
     PLAYWRIGHT_AVAILABLE = True
@@ -37,21 +30,19 @@ USER_AGENT = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
 
 
 def fetch_rendered_html(url: str) -> str:
-    """
-    Playwright ile sayfayı JS sonrası render edip HTML içeriğini döner.
-    Eğer Playwright yoksa veya hata olursa exception fırlatır.
-    """
     if not PLAYWRIGHT_AVAILABLE:
         raise RuntimeError("Playwright yüklü değil.")
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
             page = browser.new_page(user_agent=USER_AGENT)
-            page.goto(url, wait_until="networkidle", timeout=15000)
+            page.goto(url, wait_until="networkidle", timeout=20000)
+            # Dinamik içerik için kısa ek bekleme
             try:
-                page.wait_for_selector('.M7eMe', timeout=10000)
+                page.wait_for_selector('.M7eMe, .cBGGJ a', timeout=12000)
             except PWTimeoutError:
-                pass  # Yine de içeriği al
+                pass
+            page.wait_for_timeout(1500)
             content = page.content()
             browser.close()
             return content
@@ -62,50 +53,35 @@ def fetch_rendered_html(url: str) -> str:
 
 
 def get_inner_html(element):
-    """
-    HTML içerikleri biçimlendirme etiketleriyle birlikte döner (b, i, u, a, ul, ol, li).
-    <font> ve gereksiz <span> gibi yapılar da semantik olarak dönüştürülür/kaldırılır.
-    """
     if not element:
         return ""
-
     for span in element.find_all("span"):
         style = span.get("style", "").lower()
-        replaced = False
         if "font-weight:700" in style or "bold" in style:
             span.name = "b"
             span.attrs = {}
-            replaced = True
         if "font-style:italic" in style:
             span.name = "i"
             span.attrs = {}
-            replaced = True
         if "text-decoration:underline" in style:
             span.name = "u"
             span.attrs = {}
-            replaced = True
-        # Eğer birden fazla varsa son dönüşüm geçerli olur
-
     for tag in element.find_all(['font']):
         tag.unwrap()
-
     return element.decode_contents().strip()
 
 
 def analyze_google_form(url: str):
-    """Google Form URL'sini parse ederek zengin metin, görseller ve doğru bölümlemeyi içeren form yapısını döndürür."""
     try:
         headers = {'User-Agent': USER_AGENT}
         html_text = None
 
-        # Playwright ile dene önce
         if PLAYWRIGHT_AVAILABLE:
             try:
                 html_text = fetch_rendered_html(url)
             except Exception:
-                html_text = None  # fallback'a düşsün
+                html_text = None
 
-        # Fallback: requests
         if not html_text:
             try:
                 if "forms.gle/" in url:
@@ -119,8 +95,15 @@ def analyze_google_form(url: str):
                 return {"error": f"URL okunamadı. Geçerli bir Google Form linki girin. Hata: {e}"}
 
         soup = BeautifulSoup(html_text, 'html.parser')
-        form_data = {"pages": []}
 
+        # debug olarak alınan ham HTML'i kaydet (Railway'de log'a düşer veya dosya oluşturursan kontrol et)
+        try:
+            with open("/tmp/debug_full_rendered_form.html", "w", encoding="utf-8") as f:
+                f.write(soup.prettify())
+        except Exception:
+            pass  # İzin yoksa geç
+
+        form_data = {"pages": []}
         title_div = soup.find('div', class_='F9yp7e')
         form_data['title'] = get_inner_html(title_div) if title_div else "İsimsiz Form"
         desc_div = soup.find('div', class_='cBGGJ')
@@ -132,7 +115,6 @@ def analyze_google_form(url: str):
                     raw = script.string.replace('var FB_PUBLIC_LOAD_DATA_ = ', '').rstrip(';')
                     data = json.loads(raw)
                     question_list = data[1][1]
-
                     current_page = []
 
                     email_div = soup.find('div', {'jsname': 'Y0xS1b'})
@@ -249,7 +231,6 @@ def analyze_google_form(url: str):
 
                     if current_page:
                         form_data['pages'].append(current_page)
-
                     if not form_data['pages'] and current_page:
                         form_data['pages'].append(current_page)
 
@@ -378,7 +359,6 @@ input[type=radio],input[type=checkbox]{flex-shrink:0;margin-top:0.3rem;width:1.1
             <div class="question-label">{{ q.text | safe }} {% if q.required %}<span class="required-star">*</span>{% endif %}</div>
             {% if q.description %}<div class="question-description">{{ q.description | safe }}</div>{% endif %}
             {% if q.image_url %}<div class="form-image-container"><img src="{{ q.image_url }}" alt="Soru Görseli"></div>{% endif %}
-
             {% if q.type == 'E-posta' %} <input type="email" name="{{ q.entry_id }}" required>
             {% elif q.type == 'Kısa Yanıt' %} <input type="text" name="{{ q.entry_id }}" {% if q.required %}required{% endif %}>
             {% elif q.type == 'Paragraf' %} <textarea name="{{ q.entry_id }}" {% if q.required %}required{% endif %}></textarea>
@@ -480,6 +460,19 @@ function navigate(direction) {
 """
 
 
+def extract_format_flags(html_fragment: str):
+    """HTML içinde bold/italic/underline/link olup olmadığını, ve link href'lerini çıkar."""
+    soup = BeautifulSoup(html_fragment or "", "html.parser")
+    flags = {
+        "has_bold": bool(soup.find('b')),
+        "has_italic": bool(soup.find('i')),
+        "has_underline": bool(soup.find('u')),
+        "has_link": bool(soup.find('a')),
+        "link_hrefs": ", ".join([a.get('href', '') for a in soup.find_all('a') if a.get('href')]) if soup.find_all('a') else ""
+    }
+    return flags
+
+
 @app.route('/', methods=['GET', 'POST'])
 def index():
     if request.method == 'POST':
@@ -491,6 +484,7 @@ def index():
             return render_template_string(HTML_TEMPLATE, error=form_data["error"])
         session['form_structure'] = form_data
         return render_template_string(HTML_TEMPLATE, form_data=form_data)
+    # Eğer ?url=... ve debug paramı yoksa kullanıcıyı form arayüzüne yönlendir
     return render_template_string(HTML_TEMPLATE)
 
 
@@ -572,6 +566,79 @@ def submit():
                      mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                      as_attachment=True,
                      download_name='form_cevaplari.xlsx')
+
+
+@app.route('/debug', methods=['GET'])
+def debug_excel():
+    url = request.args.get('url', '').strip()
+    if not url or ("docs.google.com/forms" not in url and "forms.gle" not in url):
+        return "Geçerli bir Google Form URL'si parametre olarak ver. Örn: /debug?url=...", 400
+
+    form_data = analyze_google_form(url)
+    if "error" in form_data:
+        return form_data["error"], 400
+
+    rows = []
+    for page_idx, page in enumerate(form_data.get('pages', [])):
+        for q_idx, q in enumerate(page):
+            if not q.get('type'):
+                continue
+            if q['type'] in ['Başlık', 'Media']:
+                # Yine de gözükmesini istiyorsan ekle
+                rows.append({
+                    "Sayfa": page_idx + 1,
+                    "Soru Numarası": q_idx + 1,
+                    "Tip": q['type'],
+                    "Raw HTML Text": q.get('text', ''),
+                    "Raw HTML Description": q.get('description', ''),
+                    "Plain Text Text": BeautifulSoup(q.get('text', ''), "html.parser").get_text(separator=" ", strip=True),
+                    "Plain Text Description": BeautifulSoup(q.get('description', ''), "html.parser").get_text(separator=" ", strip=True),
+                    **{f"Text_{k}": v for k, v in extract_format_flags(q.get('text', '')).items()},
+                    **{f"Description_{k}": v for k, v in extract_format_flags(q.get('description', '')).items()},
+                })
+                continue
+
+            base = {
+                "Sayfa": page_idx + 1,
+                "Soru Numarası": q_idx + 1,
+                "Tip": q['type'],
+                "Raw HTML Text": q.get('text', ''),
+                "Raw HTML Description": q.get('description', ''),
+                "Plain Text Text": BeautifulSoup(q.get('text', ''), "html.parser").get_text(separator=" ", strip=True),
+                "Plain Text Description": BeautifulSoup(q.get('description', ''), "html.parser").get_text(separator=" ", strip=True),
+            }
+            text_flags = extract_format_flags(q.get('text', ''))
+            desc_flags = extract_format_flags(q.get('description', ''))
+            base.update({
+                "Text_has_bold": text_flags["has_bold"],
+                "Text_has_italic": text_flags["has_italic"],
+                "Text_has_underline": text_flags["has_underline"],
+                "Text_has_link": text_flags["has_link"],
+                "Text_link_hrefs": text_flags["link_hrefs"],
+                "Description_has_bold": desc_flags["has_bold"],
+                "Description_has_italic": desc_flags["has_italic"],
+                "Description_has_underline": desc_flags["has_underline"],
+                "Description_has_link": desc_flags["has_link"],
+                "Description_link_hrefs": desc_flags["link_hrefs"],
+            })
+            rows.append(base)
+
+    df = pd.DataFrame(rows)
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name="Debug Formatlama")
+        ws = writer.sheets["Debug Formatlama"]
+        for i, col in enumerate(df.columns):
+            col_width = max(df[col].astype(str).map(len).max(), len(col))
+            try:
+                ws.column_dimensions[chr(65 + i)].width = min(col_width + 2, 70)
+            except Exception:
+                pass
+    output.seek(0)
+    return send_file(output,
+                     mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                     as_attachment=True,
+                     download_name='debug_form_formatlama.xlsx')
 
 
 if __name__ == '__main__':
