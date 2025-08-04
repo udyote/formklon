@@ -23,7 +23,7 @@ import pandas as pd
 from bs4 import BeautifulSoup
 from flask import Flask, request, render_template_string, send_file, session
 
-# Playwright import, fallback olacak
+# Playwright import; yoksa fallback'a düşecek
 try:
     from playwright.sync_api import sync_playwright, TimeoutError as PWTimeoutError
     PLAYWRIGHT_AVAILABLE = True
@@ -40,7 +40,6 @@ USER_AGENT = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
 def fetch_rendered_html(url: str) -> str:
     """
     Playwright ile sayfayı JS sonrası render edip HTML içeriğini döner.
-    Eğer başarısız olursa exception fırlatır.
     """
     if not PLAYWRIGHT_AVAILABLE:
         raise RuntimeError("Playwright yüklü değil.")
@@ -52,7 +51,7 @@ def fetch_rendered_html(url: str) -> str:
             try:
                 page.wait_for_selector('.M7eMe', timeout=10000)
             except PWTimeoutError:
-                pass  # yine de içeriği al
+                pass  # Yine de içeriği al
             content = page.content()
             browser.close()
             return content
@@ -65,25 +64,24 @@ def fetch_rendered_html(url: str) -> str:
 def get_inner_html(element):
     """
     HTML içerikleri biçimlendirme etiketleriyle birlikte döner (b, i, u, a, ul, ol, li).
-    Gereksiz <font> gibi etiketleri kaldırır.
+    Gereksiz <font> gibi etiketleri kaldırır ve inline style'dan semantik dönüşüm yapar.
     """
     if not element:
         return ""
 
-    # Stil içeren span'ları semantik etiketlere çevir
     for span in element.find_all("span"):
-        style = span.get("style", "").lower()
+        style = (span.get("style") or "").lower()
+        # semantik olmayan stil -> etikete çevir
         if "font-weight:700" in style or "bold" in style:
             span.name = "b"
             span.attrs = {}
         elif "font-style:italic" in style:
             span.name = "i"
             span.attrs = {}
-        elif "text-decoration:underline" in style:
+        elif "text-decoration:underline" in style or "underline" in style:
             span.name = "u"
             span.attrs = {}
 
-    # Gereksiz etiketleri kaldır (örneğin <font>)
     for tag in element.find_all(['font']):
         tag.unwrap()
 
@@ -92,31 +90,50 @@ def get_inner_html(element):
 
 def detect_formatting(html: str):
     """
-    Verilen HTML içinde bold/italic/underline/link var mı diye bakar.
+    Verilen HTML içinde bold/italic/underline/link var mı tespit eder.
+    Hem etiketlere hem inline style'a bakar.
     """
     soup = BeautifulSoup(html or "", "html.parser")
+    # Bold: <b>, <strong>, style font-weight
+    bold = bool(
+        soup.find(['b', 'strong']) or
+        any(
+            ('font-weight:700' in (tag.get('style') or '').lower()) or
+            ('bold' in (tag.get('style') or '').lower())
+            for tag in soup.find_all(['span', 'div', 'p'])
+        )
+    )
+    # Italic: <i> veya style font-style:italic
+    italic = bool(
+        soup.find('i') or
+        any('font-style:italic' in (tag.get('style') or '').lower() for tag in soup.find_all(['span', 'div', 'p']))
+    )
+    # Underline: <u> veya style içinde underline
+    underline = bool(
+        soup.find('u') or
+        any('underline' in (tag.get('style') or '').lower() for tag in soup.find_all(['span', 'div', 'p']))
+    )
+    # Link: <a>
+    link = bool(soup.find('a'))
     return {
-        'bold': bool(soup.find('b')),
-        'italic': bool(soup.find('i')),
-        'underline': bool(soup.find('u')),
-        'link': bool(soup.find('a')),
+        'bold': bold,
+        'italic': italic,
+        'underline': underline,
+        'link': link,
     }
 
 
 def analyze_google_form(url: str):
-    """Google Form URL'sini parse ederek zengin metin, görseller ve doğru bölümlemeyi içeren form yapısını döndürür."""
+    """Google Form URL'sini parse ederek form yapısını döndürür."""
     try:
-        headers = {
-            'User-Agent': USER_AGENT
-        }
-
+        headers = {'User-Agent': USER_AGENT}
         html_text = None
-        # Önce Playwright ile almayı dene
+
         if PLAYWRIGHT_AVAILABLE:
             try:
                 html_text = fetch_rendered_html(url)
             except Exception:
-                html_text = None  # fallback'a düşecek
+                html_text = None  # fallback yapılacak
 
         if not html_text:
             try:
@@ -156,8 +173,12 @@ def analyze_google_form(url: str):
                                 entry_id_part = p.split(',')[-1].split('"')[0]
                                 if entry_id_part.isdigit():
                                     current_page.append({
-                                        'text': 'E-posta', 'description': 'Lütfen geçerli bir e-posta adresi girin.',
-                                        'type': 'E-posta', 'entry_id': f'entry.{entry_id_part}', 'required': True, 'image_url': None
+                                        'text': 'E-posta',
+                                        'description': 'Lütfen geçerli bir e-posta adresi girin.',
+                                        'type': 'E-posta',
+                                        'entry_id': f'entry.{entry_id_part}',
+                                        'required': True,
+                                        'image_url': None
                                     })
                         except Exception:
                             pass
@@ -181,7 +202,12 @@ def analyze_google_form(url: str):
                                     question['image_url'] = img_elem.get('src')
 
                             if q_data[4] is None:
-                                current_page.append({'type': 'Media', 'text': question['text'], 'description': question['description'], 'image_url': question['image_url']})
+                                current_page.append({
+                                    'type': 'Media',
+                                    'text': question['text'],
+                                    'description': question['description'],
+                                    'image_url': question['image_url']
+                                })
                                 continue
 
                             if q_type == 7:
@@ -217,7 +243,6 @@ def analyze_google_form(url: str):
                                             opt_html = ""
                                             if i < len(option_html_elements):
                                                 label_elem = option_html_elements[i]
-                                                # içeriği olduğu gibi sakla
                                                 opt_html = get_inner_html(label_elem)
                                                 img_tag = label_elem.select_one('.LAANW img.QU5LQc')
                                                 if img_tag and img_tag.has_attr('src'):
@@ -226,7 +251,6 @@ def analyze_google_form(url: str):
                                     question['type'] = 'Çoktan Seçmeli' if q_type == 2 else 'Onay Kutuları'
                                 elif q_type == 3:
                                     question['type'] = 'Açılır Liste'
-                                    # Basitçe seçenekler için HTML oluştur
                                     question['options'] = [{'text': o[0], 'html': f"<span>{o[0]}</span>"} for o in q_info[1] if o[0]]
                                 elif q_type == 5:
                                     question['type'] = 'Doğrusal Ölçek'
@@ -514,6 +538,8 @@ def submit():
     for page in form_structure.get('pages', []):
         all_questions.extend(page)
 
+    debug = os.environ.get("DEBUG_FORM_CLONE", "") in ("1", "true", "True")
+
     for question in all_questions:
         q_type = question.get('type')
         if not q_type or q_type in ['Başlık', 'Media']:
@@ -526,6 +552,10 @@ def submit():
             q_text_plain = f"[İsimsiz Soru - Tip: {q_type}]"
 
         formatting = detect_formatting(q_text_html)
+
+        if debug:
+            print("DEBUG question HTML:", q_text_html)
+            print("DEBUG formatting:", formatting)
 
         if 'Tablo' in q_type:
             for row in question['rows']:
@@ -567,7 +597,6 @@ def submit():
                 final.append(f"Diğer: {other_txt}" if other_txt else "Diğer (belirtilmemiş)")
                 html_parts.append(f"<span>Diğer: {other_txt or 'belirtilmemiş'}</span>")
             final.extend(answers)
-            # seçeneklerin HTML'lerini al
             if answers and isinstance(question.get('options'), list):
                 for sel in answers:
                     for opt in question['options']:
@@ -585,7 +614,6 @@ def submit():
                 answer_html = f"<span>Diğer: {other_txt or 'belirtilmemiş'}</span>"
             elif ans:
                 answer_str = ans
-                # seçilen seçeneğin HTML'ini bul
                 if isinstance(question.get('options'), list):
                     for opt in question['options']:
                         if opt.get('text') == ans:
@@ -616,7 +644,6 @@ def submit():
         df.to_excel(writer, index=False, sheet_name=sheet)
         ws = writer.sheets[sheet]
         for i, col in enumerate(df.columns):
-            # Excel kolon genişliği ayarla
             col_width = max(df[col].astype(str).map(len).max(), len(col))
             ws.column_dimensions[chr(65 + i)].width = min(col_width + 2, 70)
     output.seek(0)
