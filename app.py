@@ -23,13 +23,19 @@ from flask import Flask, request, render_template_string, send_file, session
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-fallback-key")
 
+# === ÇÖZÜM: KULLANICININ ANALİZİNE DAYALI OLARAK İYİLEŞTİRİLMİŞ FONKSİYON ===
 def get_inner_html(element):
-    """Bir BeautifulSoup elementinin iç HTML'ini string olarak döndürür."""
+    """
+    Bir BeautifulSoup elementinin iç HTML'ini string olarak döndürür.
+    Gereksiz <font> etiketlerini temizlerken, <b>, <i>, <u>, <a>, <ul>, <ol>, <li>
+    gibi zengin metin biçimlendirme etiketlerini korur.
+    """
     if not element:
         return ""
-    # Google'ın eklediği <font> gibi gereksiz etiketleri kaldır ama içeriğini koru
-    for unwanted_tag in element.find_all(['font']):
-        unwanted_tag.unwrap()
+    # Google'ın eklediği ve formatı bozan <font> etiketlerini kaldır ama içindeki metni/tag'leri koru.
+    # Bu işleme "unwrap" denir.
+    for font_tag in element.find_all('font'):
+        font_tag.unwrap()
     return "".join(map(str, element.contents)).strip()
 
 def analyze_google_form(url: str):
@@ -50,7 +56,6 @@ def analyze_google_form(url: str):
     soup = BeautifulSoup(response.text, 'html.parser')
     form_data = {"pages": []}
     
-    # Ana Başlık ve Açıklama (Zengin metin destekli)
     title_div = soup.find('div', class_='F9yp7e')
     form_data['title'] = get_inner_html(title_div) if title_div else "İsimsiz Form"
     desc_div = soup.find('div', class_='cBGGJ')
@@ -66,7 +71,6 @@ def analyze_google_form(url: str):
                 
                 current_page = []
 
-                # E-posta alanı
                 email_div = soup.find('div', {'jsname': 'Y0xS1b'})
                 if email_div:
                     try:
@@ -88,13 +92,10 @@ def analyze_google_form(url: str):
                         question = {'image_url': None}
                         item_container = soup.find('div', {'data-item-id': str(item_id)})
                         
-                        # === ÇÖZÜM ADIM 1: ZENGİN METİNİ GÜVENİLİR ŞEKİLDE ÇEKME ===
-                        # JSON verisindeki düz metin yerine, doğrudan HTML'den zengin metni al.
-                        # Bu sınıflar Google Formlar'da başlık ve açıklamalar için kullanılır.
+                        # Zengin metni (HTML) doğrudan ve doğru bir şekilde al
                         q_text_element = item_container.select_one('.M7eMe') if item_container else None
                         q_desc_element = item_container.select_one('.OIC90c') if item_container else None
                         
-                        # Zengin metin (HTML) alınır. Eğer bulunamazsa JSON'daki düz metin kullanılır.
                         question['text'] = get_inner_html(q_text_element) if q_text_element else q_data[1]
                         question['description'] = get_inner_html(q_desc_element) if q_desc_element else (q_data[2] if len(q_data) > 2 and q_data[2] else "")
                         
@@ -106,7 +107,7 @@ def analyze_google_form(url: str):
                             current_page.append({'type': 'Media', 'text': question['text'], 'description': question['description'], 'image_url': question['image_url']})
                             continue
 
-                        if q_type == 7: # Grid Tipi Sorular
+                        if q_type == 7:
                             rows_data = q_data[4]
                             if not (isinstance(rows_data, list) and rows_data): continue
                             first_row = rows_data[0]
@@ -252,7 +253,7 @@ input[type=radio],input[type=checkbox]{flex-shrink:0;margin-top:0.3rem;width:1.1
 .title-description-block{padding-bottom:1rem;border-bottom:1px solid var(--bs-border-color);margin-bottom:1.6rem}
 .section-title{margin-top:0;margin-bottom:0.5rem;font-size:1.3em;color:var(--bs-body-color);}
 .section-description{white-space:pre-wrap;color:var(--bs-secondary-color);line-height:1.5;margin-top:0;font-size:0.95em}
-.section-description ul,.section-description ol{margin-top:0.5rem;padding-left:1.5rem;}
+.section-description ul,.section-description ol, .question-description ul, .question-description ol{margin-top:0.5rem;padding-left:1.5rem;}
 .main-description{white-space:pre-wrap;color: var(--bs-body-color); line-height:1.5;}
 .main-description ul,.main-description ol{margin-top:0.5rem;padding-left:1.5rem;}
 .form-image-container{text-align:center;margin-bottom:1rem;margin-top:1rem;}
@@ -284,7 +285,6 @@ input[type=radio],input[type=checkbox]{flex-shrink:0;margin-top:0.3rem;width:1.1
         </div>
         {% else %}
         <div class="form-group">
-            {# === ÇÖZÜM ADIM 2: EKSİK `| safe` FİLTRESİNİ EKLEME === #}
             <div class="question-label">{{ q.text | safe }} {% if q.required %}<span class="required-star">*</span>{% endif %}</div>
             {% if q.description %}<div class="question-description">{{ q.description | safe }}</div>{% endif %}
             {% if q.image_url %}<div class="form-image-container"><img src="{{ q.image_url }}" alt="Soru Görseli"></div>{% endif %}
@@ -366,38 +366,14 @@ function showPage(index) {
 
 function validatePage(pageIndex) {
     const currentPage = pages[pageIndex];
-    if (!currentPage) return true; // Boş sayfayı geçerli say
-
+    if (!currentPage) return true;
     const form = document.getElementById('clone-form');
-    const inputs = currentPage.querySelectorAll('[required]');
+    const requiredInputs = currentPage.querySelectorAll('[required]');
     let allValid = true;
-
-    for (const input of inputs) {
-        if (input.type === 'radio') {
-            const name = input.name;
-            const group = currentPage.querySelectorAll(`input[name="${name}"]`);
-            if (!Array.from(group).some(radio => radio.checked)) {
-                allValid = false;
-                break;
-            }
-        } else {
-             if (!input.checkValidity()) {
-                allValid = false;
-                break;
-            }
-        }
+    for (const input of requiredInputs) {
+        if (!input.checkValidity()) { allValid = false; break; }
     }
-
-    if (!allValid) {
-        // Formun kendi raporlama mekanizmasını tetikle
-        const tempSubmit = document.createElement('button');
-        tempSubmit.type = 'submit';
-        tempSubmit.style.display = 'none';
-        form.appendChild(tempSubmit);
-        tempSubmit.click();
-        form.removeChild(tempSubmit);
-    }
-    
+    if (!allValid && typeof form.reportValidity === 'function') { form.reportValidity(); }
     return allValid;
 }
 
