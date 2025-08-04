@@ -13,6 +13,7 @@ Production (Railway / Render / Heroku) uyumlu.
   - FIX: Çoktan seçmeli seçeneklerin (radyo düğmeleri) tekrar tıklanarak seçiminin kaldırılması sağlandı.
   - FIX: Kısaltılmış 'forms.gle' linklerini takip ederek ana formu bulur.
   - FIX: Metin başlığı olmayan (sadece görsel/video içeren) soruların çökmesini engeller.
+  - FIX: Zengin metin formatlama (bold, italic, link, liste) özellikleri geri getirildi.
   - FIX: Google Formlar'daki "Bölüm" mantığı artık doğru şekilde çalışıyor ve sadece gerçek bölümleri sayfa olarak ayırıyor.
 """
 
@@ -65,7 +66,6 @@ def analyze_google_form(url: str):
                 
                 current_page = []
 
-                # E-posta sorusunu formun en başına ekleyelim (eğer varsa)
                 email_div = soup.find('div', {'jsname': 'Y0xS1b'})
                 if email_div:
                     try:
@@ -87,26 +87,22 @@ def analyze_google_form(url: str):
                         question = {'image_url': None}
                         item_container = soup.find('div', {'data-item-id': str(item_id)})
                         
-                        q_text_html = q_data[1]
-                        q_desc_html = q_data[2] if len(q_data) > 2 and q_data[2] else ""
+                        # === ZENGİN METİN DÜZELTMESİ: Veriyi doğrudan JSON'dan al ===
+                        question['text'] = q_data[1]
+                        question['description'] = q_data[2] if len(q_data) > 2 and q_data[2] else ""
                         
+                        # Sadece resim gibi ek veriler için HTML'i parse et
                         if item_container:
-                            title_elem = item_container.find(class_='SajZGc')
-                            desc_elem = item_container.find(class_='OIC90c')
-                            if title_elem: q_text_html = get_inner_html(title_elem)
-                            if desc_elem: q_desc_html = get_inner_html(desc_elem)
                             img_elem = item_container.select_one('.y6GzNb img')
                             if img_elem and img_elem.has_attr('src'): question['image_url'] = img_elem.get('src')
-
-                        question['text'] = q_text_html
-                        question['description'] = q_desc_html
-
+                        
                         if q_data[4] is None:
                             # Bu muhtemelen sadece video/resim gibi bir öğedir, soru değildir.
-                            current_page.append({'type': 'Media', 'text': q_text_html, 'description': q_desc_html, 'image_url': question['image_url']})
+                            current_page.append({'type': 'Media', 'text': question['text'], 'description': question['description'], 'image_url': question['image_url']})
                             continue
 
-                        if q_type == 6: question['type'] = 'Başlık'
+                        if q_type == 6:
+                            question['type'] = 'Başlık'
                         elif q_type == 7:
                             rows_data = q_data[4]
                             if not (isinstance(rows_data, list) and rows_data): continue
@@ -152,23 +148,19 @@ def analyze_google_form(url: str):
                         
                         current_page.append(question)
 
-                        # ================== BAŞLANGIÇ: YENİ BÖLÜM MANTIĞI ==================
-                        # Bir sorunun sonunda sayfa geçişi olup olmadığını kontrol et.
-                        # Gerçek bir "Bölüm" ayıracı, verinin 12. indeksinde bu bilgiyi taşır.
+                        # === DOĞRU BÖLÜM MANTIĞI ===
                         is_page_break = len(q_data) > 12 and q_data[12]
                         if is_page_break:
                             form_data['pages'].append(current_page)
                             current_page = []
-                        # ================== BİTİŞ: YENİ BÖLÜM MANTIĞI ==================
 
                     except (IndexError, TypeError, KeyError) as e:
                         print(f"DEBUG: Bir soru işlenirken hata oluştu (ID: {q_data[0]}). Soru atlanıyor. Hata: {e}")
                         continue
                 
-                if current_page: # Döngü bittiğinde kalan son sayfayı da ekle
+                if current_page:
                     form_data['pages'].append(current_page)
                 
-                # Eğer hiçbir sayfa ayracı bulunamadıysa, tüm soruları tek bir sayfaya koy.
                 if not form_data['pages'] and current_page:
                      form_data['pages'].append(current_page)
 
@@ -278,20 +270,14 @@ input[type=radio],input[type=checkbox]{flex-shrink:0;margin-top:0.3rem;width:1.1
 <form method="post" action="/submit" id="clone-form">
 {% for page in form_data.pages %}
 <div class="page" id="page-{{ loop.index0 }}" style="display: {% if loop.index0 == 0 %}block{% else %}none{% endif %};">
-    <div class="page-counter">Bölüm {{ loop.index }} / {{ form_data.pages | length }}</div>
+    {% if form_data.pages | length > 1 %}<div class="page-counter">Bölüm {{ loop.index }} / {{ form_data.pages | length }}</div>{% endif %}
     {% for q in page %}
-        {% if q.type == 'Başlık' %}
+        {% if q.type == 'Başlık' or q.type == 'Media' %}
         <div class="title-description-block">
             <div class="section-title">{{ q.text | safe }}</div>
             {% if q.description %}<div class="section-description">{{ q.description | safe }}</div>{% endif %}
             {% if q.image_url %}<div class="form-image-container"><img src="{{ q.image_url }}" alt="Başlık Görseli"></div>{% endif %}
         </div>
-        {% elif q.type == 'Media' %}
-             <div class="title-description-block">
-                {% if q.text %}<div class="section-title">{{ q.text | safe }}</div>{% endif %}
-                {% if q.description %}<div class="section-description">{{ q.description | safe }}</div>{% endif %}
-                {% if q.image_url %}<div class="form-image-container"><img src="{{ q.image_url }}" alt="Medya İçeriği"></div>{% endif %}
-            </div>
         {% else %}
         <div class="form-group">
             <div class="question-label">{{ q.text | safe }} {% if q.required %}<span class="required-star">*</span>{% endif %}</div>
@@ -304,27 +290,27 @@ input[type=radio],input[type=checkbox]{flex-shrink:0;margin-top:0.3rem;width:1.1
             {% elif q.type == 'Çoktan Seçmeli' %}
             <div class="radio-group">
             {% for opt in q.options %}
-            <label><input type="radio" name="{{ q.entry_id }}" value="{{ opt.text }}" {% if q.required %}required{% endif %}><div class="option-content">{% if opt.image_url %}<div class="option-image-container"><img src="{{ opt.image_url }}" alt="{{ opt.text }}"></div>{% endif %}<span class="option-text">{{ opt.text }}</span></div></label>
+            <label><input type="radio" name="{{ q.entry_id }}" value="{{ opt.text }}" {% if q.required %}required{% endif %}><div class="option-content">{% if opt.image_url %}<div class="option-image-container"><img src="{{ opt.image_url }}" alt="{{ opt.text }}"></div>{% endif %}<span class="option-text">{{ opt.text | safe }}</span></div></label>
             {% endfor %}
             {% if q.has_other %} <label class="other-option-label"><input type="radio" name="{{ q.entry_id }}" value="__other_option__"><span>Diğer:</span><input type="text" class="other-option-input" name="{{ q.entry_id }}.other_option_response"></label> {% endif %}
             </div>
             {% elif q.type == 'Onay Kutuları' %}
             <div class="checkbox-group">
             {% for opt in q.options %}
-            <label><input type="checkbox" name="{{ q.entry_id }}" value="{{ opt.text }}"><div class="option-content">{% if opt.image_url %}<div class="option-image-container"><img src="{{ opt.image_url }}" alt="{{ opt.text }}"></div>{% endif %}<span class="option-text">{{ opt.text }}</span></div></label>
+            <label><input type="checkbox" name="{{ q.entry_id }}" value="{{ opt.text }}"><div class="option-content">{% if opt.image_url %}<div class="option-image-container"><img src="{{ opt.image_url }}" alt="{{ opt.text }}"></div>{% endif %}<span class="option-text">{{ opt.text | safe }}</span></div></label>
             {% endfor %}
             {% if q.has_other %} <label class="other-option-label"><input type="checkbox" name="{{ q.entry_id }}" value="__other_option__"><span>Diğer:</span><input type="text" class="other-option-input" name="{{ q.entry_id }}.other_option_response"></label>{% endif %}
             </div>
             {% elif q.type == 'Açılır Liste' %}
-            <select name="{{ q.entry_id }}" {% if q.required %}required{% endif %}><option value="" disabled selected>Seçin...</option>{% for opt in q.options %}<option value="{{ opt }}">{{ opt }}</option>{% endfor %}</select>
+            <select name="{{ q.entry_id }}" {% if q.required %}required{% endif %}><option value="" disabled selected>Seçin...</option>{% for opt in q.options %}<option value="{{ opt }}">{{ opt | safe }}</option>{% endfor %}</select>
             {% elif q.type == 'Doğrusal Ölçek' %}
-            <div class="radio-group" style="flex-direction:row;justify-content:space-around;align-items:center;"><span>{{ q.labels[0] }}</span>{% for opt in q.options %} <label style="flex-direction:column;align-items:center;"><span>{{ opt }}</span><input type="radio" name="{{ q.entry_id }}" value="{{ opt }}" {% if q.required %}required{% endif %}></label> {% endfor %}<span>{{ q.labels[1] }}</span></div>
+            <div class="radio-group" style="flex-direction:row;justify-content:space-around;align-items:center;"><span>{{ q.labels[0] | safe }}</span>{% for opt in q.options %} <label style="flex-direction:column;align-items:center;"><span>{{ opt | safe }}</span><input type="radio" name="{{ q.entry_id }}" value="{{ opt }}" {% if q.required %}required{% endif %}></label> {% endfor %}<span>{{ q.labels[1] | safe }}</span></div>
             {% elif q.type == 'Derecelendirme' %}
             <div class="rating-group">{% for opt in q.options | reverse %} <input type="radio" id="star{{ opt }}-{{ q.entry_id }}" name="{{ q.entry_id }}" value="{{ opt }}" {% if q.required %}required{% endif %}><label for="star{{ opt }}-{{ q.entry_id }}">★</label> {% endfor %}</div>
             {% elif q.type == 'Tarih' %} <input type="date" name="{{ q.entry_id }}" {% if q.required %}required{% endif %}>
             {% elif q.type == 'Saat' %} <input type="time" name="{{ q.entry_id }}" {% if q.required %}required{% endif %}>
             {% elif q.type in ['Çoktan Seçmeli Tablo','Onay Kutusu Tablosu'] %}
-            <table class="grid-table"><thead><tr><th></th>{% for col in q.cols %}<th>{{ col }}</th>{% endfor %}</tr></thead><tbody>{% for row in q.rows %}<tr><td>{{ row.text }}</td>{% for col in q.cols %}<td><input type="{{ 'checkbox' if 'Onay' in q.type else 'radio' }}" name="{{ row.entry_id }}" value="{{ col }}" {% if q.required %}required{% endif %}></td>{% endfor %}</tr>{% endfor %}</tbody></table>
+            <table class="grid-table"><thead><tr><th></th>{% for col in q.cols %}<th>{{ col | safe }}</th>{% endfor %}</tr></thead><tbody>{% for row in q.rows %}<tr><td>{{ row.text | safe }}</td>{% for col in q.cols %}<td><input type="{{ 'checkbox' if 'Onay' in q.type else 'radio' }}" name="{{ row.entry_id }}" value="{{ col }}" {% if q.required %}required{% endif %}></td>{% endfor %}</tr>{% endfor %}</tbody></table>
             {% endif %}
         </div>
         {% endif %}
@@ -352,6 +338,7 @@ document.addEventListener('DOMContentLoaded', () => {
         textInput.addEventListener('input', checkAssociatedControl);
         textInput.addEventListener('focus', checkAssociatedControl);
     });
+    if(document.querySelectorAll('.page').length > 0) { showPage(0); }
 });
 let currentPageIndex = 0;
 const pages = document.querySelectorAll('.page');
@@ -360,15 +347,14 @@ const nextButton = document.getElementById('next-button');
 const submitButton = document.getElementById('submit-button');
 
 function updateButtons() {
+    if (!pages.length) return;
     backButton.style.display = currentPageIndex > 0 ? 'inline-block' : 'none';
     nextButton.style.display = currentPageIndex < pages.length - 1 ? 'inline-block' : 'none';
     submitButton.style.display = currentPageIndex === pages.length - 1 ? 'inline-block' : 'none';
 }
 
 function showPage(index) {
-    pages.forEach((page, i) => {
-        page.style.display = i === index ? 'block' : 'none';
-    });
+    pages.forEach((page, i) => { page.style.display = i === index ? 'block' : 'none'; });
     updateButtons();
     window.scrollTo(0, 0);
 }
@@ -380,29 +366,19 @@ function validatePage(pageIndex) {
     const requiredInputs = currentPage.querySelectorAll('[required]');
     let allValid = true;
     for (const input of requiredInputs) {
-        if (!input.checkValidity()) {
-            allValid = false;
-            break;
-        }
+        if (!input.checkValidity()) { allValid = false; break; }
     }
-    if (!allValid && typeof form.reportValidity === 'function') {
-        form.reportValidity();
-    }
+    if (!allValid && typeof form.reportValidity === 'function') { form.reportValidity(); }
     return allValid;
 }
 
 function navigate(direction) {
-    if (direction > 0 && !validatePage(currentPageIndex)) {
-        return;
-    }
+    if (direction > 0 && !validatePage(currentPageIndex)) { return; }
     const newIndex = currentPageIndex + direction;
     if (newIndex >= 0 && newIndex < pages.length) {
         currentPageIndex = newIndex;
         showPage(currentPageIndex);
     }
-}
-if(pages.length > 0) {
-    showPage(0);
 }
 </script>
 </body></html>
