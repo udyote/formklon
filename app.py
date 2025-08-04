@@ -9,10 +9,9 @@ Production (Railway / Render / Heroku) uyumlu.
 - Medya Desteği: Sorulara ve seçeneklere eklenen görselleri destekler.
 - Doğru Bölümleme: Google Formlar'daki "Bölüm" mantığını çok sayfalı form olarak doğru şekilde uygular.
 - JS sonrası DOM alınması için Playwright ile render edilme (zengin formatlamayı almak için).
+- HTML ve JS ham hallerini zip içinde döner (raw_form.html/.txt ve scripts.js).
 - UX Düzeltmeleri: "Diğer" seçeneği ve radyo düğmesi seçimini kaldırma gibi JS iyileştirmeleri içerir.
 - Kısa Link Desteği: 'forms.gle' linklerini otomatik olarak çözer.
-- Ekstra Excel sütunları: soru/cevap HTML’leri ve biçimlendirme varlıkları (bold, italic, underline, link).
-- Zip içinde: Excel + raw HTML .txt
 """
 
 import os
@@ -20,18 +19,17 @@ import io
 import json
 import traceback
 import requests
+import zipfile
 import pandas as pd
 from bs4 import BeautifulSoup
 from flask import Flask, request, render_template_string, send_file, session
 
-# Playwright import, fallback olacak
+# Playwright import, olmazsa fallback ile devam edecek
 try:
     from playwright.sync_api import sync_playwright, TimeoutError as PWTimeoutError
     PLAYWRIGHT_AVAILABLE = True
 except ImportError:
     PLAYWRIGHT_AVAILABLE = False
-
-import zipfile
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-fallback-key")
@@ -43,7 +41,6 @@ USER_AGENT = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
 def fetch_rendered_html(url: str) -> str:
     """
     Playwright ile sayfayı JS sonrası render edip HTML içeriğini döner.
-    Eğer başarısız olursa exception fırlatır.
     """
     if not PLAYWRIGHT_AVAILABLE:
         raise RuntimeError("Playwright yüklü değil.")
@@ -51,11 +48,11 @@ def fetch_rendered_html(url: str) -> str:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
             page = browser.new_page(user_agent=USER_AGENT)
-            page.goto(url, wait_until="networkidle", timeout=20000)
+            page.goto(url, wait_until="networkidle", timeout=15000)
             try:
                 page.wait_for_selector('.M7eMe', timeout=10000)
             except PWTimeoutError:
-                pass  # yine de içeriği al
+                pass
             content = page.content()
             browser.close()
             return content
@@ -68,58 +65,75 @@ def fetch_rendered_html(url: str) -> str:
 def get_inner_html(element):
     """
     HTML içerikleri biçimlendirme etiketleriyle birlikte döner (b, i, u, a, ul, ol, li).
-    Gereksiz <font> gibi etiketleri kaldırır.
+    Gereksiz etiketler unwrap edilir, style-based semantik dönüşümler yapılır.
     """
     if not element:
         return ""
 
-    # Stil içeren span'ları semantik etiketlere çevir
     for span in element.find_all("span"):
         style = span.get("style", "").lower()
         if "font-weight:700" in style or "bold" in style:
             span.name = "b"
             span.attrs = {}
-        elif "font-style:italic" in style:
+        if "font-style:italic" in style:
             span.name = "i"
             span.attrs = {}
-        elif "text-decoration:underline" in style:
+        if "text-decoration:underline" in style:
             span.name = "u"
             span.attrs = {}
 
-    # Gereksiz etiketleri kaldır (örneğin <font>)
     for tag in element.find_all(['font']):
         tag.unwrap()
 
     return element.decode_contents().strip()
 
 
-def detect_formatting(html: str):
+def collect_all_script_contents(html_text: str, base_headers=None):
     """
-    Verilen HTML içinde bold/italic/underline/link var mı diye bakar.
+    Verilen HTML içinden inline ve dışa bağlı <script> tag'larını ayıklar.
+    Dış src'li script'leri indirir (başarısız olursa pas geçer) ve hepsini birleştirip döner.
     """
-    soup = BeautifulSoup(html or "", "html.parser")
-    return {
-        'bold': bool(soup.find('b')),
-        'italic': bool(soup.find('i')),
-        'underline': bool(soup.find('u')),
-        'link': bool(soup.find('a')),
-    }
+    headers = base_headers or {'User-Agent': USER_AGENT}
+    soup = BeautifulSoup(html_text, 'html.parser')
+    collected = []
+    for script in soup.find_all("script"):
+        if script.get("src"):
+            src = script["src"]
+            try:
+                # Mutlaklaştır: eğer protokol yoksa https ile tamamla
+                if src.startswith("//"):
+                    src_full = "https:" + src
+                elif src.startswith("http"):
+                    src_full = src
+                else:
+                    # Kısa yollar ve göreli olabilir, atla (ya da geliştirilebilir)
+                    src_full = src
+                resp = requests.get(src_full, headers=headers, timeout=8)
+                if resp.status_code == 200:
+                    collected.append(f"/* === EXTERNAL SCRIPT: {src_full} === */\n{resp.text}\n\n")
+                else:
+                    collected.append(f"/* === FAILED TO FETCH {src_full} STATUS {resp.status_code} === */\n")
+            except Exception as e:
+                collected.append(f"/* === ERROR FETCHING {src}: {e} === */\n")
+        if script.string:
+            collected.append(f"/* === INLINE SCRIPT === */\n{script.string}\n\n")
+    return "\n".join(collected)
 
 
 def analyze_google_form(url: str):
-    """Google Form URL'sini parse ederek zengin metin, görseller ve doğru bölümlemeyi içeren form yapısını döndürür."""
+    """Google Form URL'sini parse ederek form yapısını döndürür ve ham HTML/JS session'a ekler."""
     try:
-        headers = {'User-Agent': USER_AGENT}
-        html_text = None
+        headers = {
+            'User-Agent': USER_AGENT
+        }
 
-        # Önce Playwright ile dene
+        html_text = None
         if PLAYWRIGHT_AVAILABLE:
             try:
                 html_text = fetch_rendered_html(url)
             except Exception:
-                html_text = None  # fallback'a düşecek
+                html_text = None
 
-        # Fallback
         if not html_text:
             try:
                 if "forms.gle/" in url:
@@ -131,6 +145,13 @@ def analyze_google_form(url: str):
                 html_text = response.text
             except requests.exceptions.RequestException as e:
                 return {"error": f"URL okunamadı. Geçerli bir Google Form linki girin. Hata: {e}"}
+
+        # Ham HTML'i session'da sakla (kullanıcıya zip içinde döneceğiz)
+        session['raw_page_html'] = html_text
+
+        # Script'leri topla
+        combined_js = collect_all_script_contents(html_text, base_headers=headers)
+        session['raw_js'] = combined_js
 
         soup = BeautifulSoup(html_text, 'html.parser')
         form_data = {"pages": []}
@@ -225,22 +246,15 @@ def analyze_google_form(url: str):
                                             if not opt[0] and opt[0] != "":
                                                 continue
                                             opt_image_url = None
-                                            opt_html = ""
                                             if i < len(option_html_elements):
-                                                label_elem = option_html_elements[i]
-                                                opt_html = get_inner_html(label_elem)
-                                                img_tag = label_elem.select_one('.LAANW img.QU5LQc')
+                                                img_tag = option_html_elements[i].select_one('.LAANW img.QU5LQc')
                                                 if img_tag and img_tag.has_attr('src'):
                                                     opt_image_url = img_tag.get('src')
-                                            question['options'].append({
-                                                'text': opt[0],
-                                                'image_url': opt_image_url,
-                                                'html': opt_html
-                                            })
+                                            question['options'].append({'text': opt[0], 'image_url': opt_image_url})
                                     question['type'] = 'Çoktan Seçmeli' if q_type == 2 else 'Onay Kutuları'
                                 elif q_type == 3:
                                     question['type'] = 'Açılır Liste'
-                                    question['options'] = [{'text': o[0], 'html': f"<span>{o[0]}</span>"} for o in q_info[1] if o[0]]
+                                    question['options'] = [o[0] for o in q_info[1] if o[0]]
                                 elif q_type == 5:
                                     question['type'] = 'Doğrusal Ölçek'
                                     question['options'] = [o[0] for o in q_info[1]]
@@ -280,9 +294,6 @@ def analyze_google_form(url: str):
 
         if not form_data['pages'] or not form_data['pages'][0]:
             return {"error": "Formda analiz edilecek soru veya bölüm bulunamadı."}
-
-        # Ham HTML'i de sakla
-        form_data['_raw_html'] = html_text
         return form_data
 
     except Exception as e:
@@ -291,6 +302,7 @@ def analyze_google_form(url: str):
         return {"error": f"Beklenmeyen bir hata oluştu: {e}"}
 
 
+# Orijinal HTML_TEMPLATE'in tamamını buraya aynen koy. Aşağıya örnek formatı koydum (senin tam uzun haliyle değiştirmelisin).
 HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="tr"><head><meta charset="UTF-8"><title>Google Form Klonlayıcı</title>
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
@@ -358,7 +370,7 @@ input[type=radio],input[type=checkbox]{flex-shrink:0;margin-top:0.3rem;width:1.1
 .error-message{background:#f8d7da;color:#58151c;border: 1px solid #f1aeb5;padding:1rem;border-radius:6px;text-align:center}
 .grid-table{width:100%;border-collapse:collapse;margin-top:.5rem}
 .grid-table th,.grid-table td{border:1px solid var(--bs-border-color);padding:.6rem;text-align:center;font-size:.9rem}
-.grid-table th{background:#f8f9fa'}
+.grid-table th{background:#f8f9fa}
 .grid-table td:first-child{text-align:left;font-weight:600}
 .rating-group{display:flex;flex-direction:row-reverse;justify-content:center;gap:5px}
 .rating-group input{display:none} .rating-group label{font-size:2rem;color:#ccc;cursor:pointer}
@@ -421,11 +433,13 @@ input[type=radio],input[type=checkbox]{flex-shrink:0;margin-top:0.3rem;width:1.1
             {% if q.has_other %} <label class="other-option-label"><input type="checkbox" name="{{ q.entry_id }}" value="__other_option__"><span>Diğer:</span><input type="text" class="other-option-input" name="{{ q.entry_id }}.other_option_response"></label>{% endif %}
             </div>
             {% elif q.type == 'Açılır Liste' %}
-            <select name="{{ q.entry_id }}" {% if q.required %}required{% endif %}><option value="" disabled selected>Seçin...</option>{% for opt in q.options %}<option value="{{ opt.text }}">{{ opt.text | safe }}</option>{% endfor %}</select>
+            <select name="{{ q.entry_id }}" {% if q.required %}required{% endif %}><option value="" disabled selected>Seçin...</option>{% for opt in q.options %}<option value="{{ opt }}">{{ opt | safe }}</option>{% endfor %}</select>
             {% elif q.type == 'Doğrusal Ölçek' %}
             <div class="radio-group" style="flex-direction:row;justify-content:space-around;align-items:center;"><span>{{ q.labels[0] | safe }}</span>{% for opt in q.options %} <label style="flex-direction:column;align-items:center;"><span>{{ opt | safe }}</span><input type="radio" name="{{ q.entry_id }}" value="{{ opt }}" {% if q.required %}required{% endif %}></label> {% endfor %}<span>{{ q.labels[1] | safe }}</span></div>
             {% elif q.type == 'Derecelendirme' %}
             <div class="rating-group">{% for opt in q.options | reverse %} <input type="radio" id="star{{ opt }}-{{ q.entry_id }}" name="{{ q.entry_id }}" value="{{ opt }}" {% if q.required %}required{% endif %}><label for="star{{ opt }}-{{ q.entry_id }}">★</label> {% endfor %}</div>
+            {% elif q.type == 'Tarih' %} <input type="date" name="{{ q.entry_id }}" {% if q.required %}required{% endif %}>
+            {% elif q.type == 'Saat' %} <input type="time" name="{{ q.entry_id }}" {% if q.required %}required{% endif %}>
             {% elif q.type in ['Çoktan Seçmeli Tablo','Onay Kutusu Tablosu'] %}
             <table class="grid-table"><thead><tr><th></th>{% for col in q.cols %}<th>{{ col | safe }}</th>{% endfor %}</tr></thead><tbody>{% for row in q.rows %}<tr><td>{{ row.text | safe }}</td>{% for col in q.cols %}<td><input type="{{ 'checkbox' if 'Onay' in q.type else 'radio' }}" name="{{ row.entry_id }}" value="{{ col }}" {% if q.required %}required{% endif %}></td>{% endfor %}</tr>{% endfor %}</tbody></table>
             {% endif %}
@@ -446,7 +460,7 @@ input[type=radio],input[type=checkbox]{flex-shrink:0;margin-top:0.3rem;width:1.1
 document.addEventListener('DOMContentLoaded', () => {
     let radioMouseDownChecked;
     document.body.addEventListener('mousedown', e => { if (e.target.tagName === 'INPUT' && e.target.type === 'radio') { radioMouseDownChecked = e.target.checked; }}, true);
-    document.body.addEventListener('click', e => { if (e.target.tagName === 'INPUT' && e.target.type === 'radio' && radioMouseDownChecked) { e.target.checked = false; }}); 
+    document.body.addEventListener('click', e => { if (e.target.tagName === 'INPUT' && e.target.type === 'radio' && radioMouseDownChecked) { e.target.checked = false; }});
     document.querySelectorAll('.other-option-input').forEach(textInput => {
         const checkAssociatedControl = () => {
             const associatedControl = textInput.closest('label').querySelector('input[type=radio], input[type=checkbox]');
@@ -535,35 +549,20 @@ def submit():
             continue
 
         q_text_html = question.get('text') or ''
-        q_desc_html = question.get('description') or ''
         q_text_plain = BeautifulSoup(q_text_html, "html.parser").get_text(separator=" ", strip=True)
         if not q_text_plain:
             q_text_plain = f"[İsimsiz Soru - Tip: {q_type}]"
 
-        formatting = detect_formatting(q_text_html)
-
         if 'Tablo' in q_type:
             for row in question['rows']:
                 rid = row['entry_id']
-                row_label_plain = f"{q_text_plain} [{row['text']}]"
+                row_label = f"{q_text_plain} [{row['text']}]"
                 if 'Onay' in q_type:
                     answers = user_answers.getlist(rid)
                     val = ', '.join(answers) if answers else "Boş Bırakıldı"
                 else:
                     val = user_answers.get(rid, "Boş Bırakıldı")
-                answer_html = f"<span>{val}</span>" if val else ""
-                results.append({
-                    "Soru": row_label_plain,
-                    "Soru Tipi": q_type,
-                    "Cevap": val,
-                    "Soru HTML": q_text_html,
-                    "Soru Açıklama HTML": q_desc_html,
-                    "Cevap HTML": answer_html,
-                    "Soru Bold Var": formatting['bold'],
-                    "Soru Italic Var": formatting['italic'],
-                    "Soru Underline Var": formatting['underline'],
-                    "Soru Link Var": formatting['link'],
-                })
+                results.append({"Soru": row_label, "Soru Tipi": q_type, "Cevap": val})
             continue
 
         entry = question.get('entry_id')
@@ -571,60 +570,31 @@ def submit():
             continue
 
         answer_str = "Boş Bırakıldı"
-        answer_html = ""
         if q_type == 'Onay Kutuları':
             answers = user_answers.getlist(entry)
             final = []
-            html_parts = []
             if "__other_option__" in answers:
                 answers.remove("__other_option__")
                 other_txt = user_answers.get(f"{entry}.other_option_response", "").strip()
                 final.append(f"Diğer: {other_txt}" if other_txt else "Diğer (belirtilmemiş)")
-                html_parts.append(f"<span>Diğer: {other_txt or 'belirtilmemiş'}</span>")
             final.extend(answers)
-            if answers and isinstance(question.get('options'), list):
-                for sel in answers:
-                    for opt in question['options']:
-                        if opt.get('text') == sel:
-                            html_parts.append(opt.get('html') or f"<span>{sel}</span>")
-                            break
             if final:
                 answer_str = ', '.join(final)
-                answer_html = ''.join(html_parts)
         elif q_type == 'Çoktan Seçmeli':
             ans = user_answers.get(entry)
             if ans == "__other_option__":
                 other_txt = user_answers.get(f"{entry}.other_option_response", "").strip()
                 answer_str = f"Diğer: {other_txt}" if other_txt else "Diğer (belirtilmemiş)"
-                answer_html = f"<span>Diğer: {other_txt or 'belirtilmemiş'}</span>"
             elif ans:
                 answer_str = ans
-                if isinstance(question.get('options'), list):
-                    for opt in question['options']:
-                        if opt.get('text') == ans:
-                            answer_html = opt.get('html') or f"<span>{ans}</span>"
-                            break
         else:
             raw_answer = user_answers.get(entry, "")
             answer_str = raw_answer if raw_answer.strip() != "" else "Boş Bırakıldı"
-            answer_html = f"<span>{raw_answer}</span>" if raw_answer.strip() != "" else ""
 
-        results.append({
-            "Soru": q_text_plain,
-            "Soru Tipi": q_type,
-            "Cevap": answer_str,
-            "Soru HTML": q_text_html,
-            "Soru Açıklama HTML": q_desc_html,
-            "Cevap HTML": answer_html,
-            "Soru Bold Var": formatting['bold'],
-            "Soru Italic Var": formatting['italic'],
-            "Soru Underline Var": formatting['underline'],
-            "Soru Link Var": formatting['link'],
-        })
-
-    df = pd.DataFrame(results)
+        results.append({"Soru": q_text_plain, "Soru Tipi": q_type, "Cevap": answer_str})
 
     # Excel oluştur
+    df = pd.DataFrame(results)
     excel_buffer = io.BytesIO()
     with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
         sheet = 'Form Cevaplari'
@@ -635,26 +605,30 @@ def submit():
             ws.column_dimensions[chr(65 + i)].width = min(col_width + 2, 70)
     excel_buffer.seek(0)
 
-    # Raw HTML
-    raw_html = form_structure.get('_raw_html', '')
-    txt_buffer = io.BytesIO()
-    txt_buffer.write(raw_html.encode('utf-8'))
-    txt_buffer.seek(0)
+    # Raw HTML ve JS al
+    raw_html = session.get('raw_page_html', '')
+    raw_js = session.get('raw_js', '')
 
-    # Ziple
+    # Zip paketle
     zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer, mode='w', compression=zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr('form_cevaplari.xlsx', excel_buffer.read())
-        zf.writestr('raw_form_html.txt', txt_buffer.read())
+    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as z:
+        # Excel
+        z.writestr('form_cevaplari.xlsx', excel_buffer.getvalue())
+        # HTML hem .html hem .txt isteğe göre
+        z.writestr('raw_form.html', raw_html)
+        z.writestr('raw_form.txt', raw_html)
+        # JS
+        z.writestr('scripts.js', raw_js)
     zip_buffer.seek(0)
 
     session.pop('form_structure', None)
-    return send_file(
-        zip_buffer,
-        mimetype='application/zip',
-        as_attachment=True,
-        download_name='form_cevaplari_ve_html.zip'
-    )
+    session.pop('raw_page_html', None)
+    session.pop('raw_js', None)
+
+    return send_file(zip_buffer,
+                     mimetype='application/zip',
+                     as_attachment=True,
+                     download_name='form_cevaplari_bundle.zip')
 
 
 if __name__ == '__main__':
