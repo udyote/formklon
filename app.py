@@ -6,9 +6,11 @@ Production (Railway / Render / Heroku) uyumlu.
 - Gunicorn ile çalıştırılabilir
 - Google Form verisini çekip yeniden oluşturur ve cevapları Excel indirir
 - Başlık/Açıklama bölümlerini ve soru açıklamalarını destekler
-- Kalın, italik, altı çizili, link ve liste gibi zengin metin formatlarını korur
+- Kalın, italik, altı çizili, link ve liste gibi zengin metin formatlarını korur (YENİDEN AKTİF EDİLDİ)
 - Sorulara ve seçeneklere eklenen görselleri destekler (Yeniden düzenlenmiş hibrit yaklaşım)
 - KULLANICI GERİ BİLDİRİM DÜZELTMELERİ UYGULANDI:
+  - FIX: Zengin metin formatlaması (bold, italic, link) geri getirildi.
+  - FIX: 'NoneType' hatası, desteklenmeyen soru tiplerinin güvenli bir şekilde atlanmasıyla çözüldü.
   - FIX: "Diğer" seçeneğinin metin alanına yazıldığında otomatik olarak işaretlenmesi sağlandı.
   - FIX: Çoktan seçmeli seçeneklerin (radyo düğmeleri) tekrar tıklanarak seçiminin kaldırılması sağlandı.
   - INFO: Soru sırası, Google Form'un dahili veri yapısındaki sırayla birebir aynıdır.
@@ -51,8 +53,6 @@ def analyze_google_form(url: str):
     desc_div = soup.find('div', class_='cBGGJ')
     form_data['description'] = get_inner_html(desc_div) if desc_div else ""
 
-    # Soruların sırası, Google'ın bu script içindeki veri yapısı tarafından belirlenir.
-    # Kod bu sırayı takip eder, bu nedenle klonlanan formun sırası orijinaliyle eşleşir.
     for script in soup.find_all('script'):
         if script.string and 'FB_PUBLIC_LOAD_DATA_' in script.string:
             try:
@@ -66,30 +66,41 @@ def analyze_google_form(url: str):
                         q_type = q_data[3]
                         question = {'image_url': None}
 
-                        item_container = soup.find('div', {'data-item-id': str(item_id)})
-
-                        # HTML'den zengin metin (link, bold vb.) ve ana görseli al
-                        q_text_html = q_data[1]
-                        q_desc_html = q_data[2] if len(q_data) > 2 and q_data[2] else ""
+                        # ================== BAŞLANGIÇ: ZENGİN METİN DÜZELTMESİ ==================
+                        # Adım 1: JSON'dan gelen düz metni bir yedek olarak al.
+                        q_text_html_fallback = q_data[1]
+                        q_desc_html_fallback = q_data[2] if len(q_data) > 2 and q_data[2] else ""
                         
+                        # Adım 2: Zengin metni (HTML) doğrudan sayfadan çekmeyi dene. Bu en doğru sonucu verir.
+                        item_container = soup.find('div', {'data-item-id': str(item_id)})
                         if item_container:
                             title_elem = item_container.find(class_='meSK8 M7eMe')
                             desc_elem = item_container.find(class_='spb5Rd OIC90c')
-                            if title_elem:
-                                q_text_html = get_inner_html(title_elem)
-                            if desc_elem:
-                                q_desc_html = get_inner_html(desc_elem)
+                            # Eğer HTML'den başlık ve açıklama alınabildiyse, onları kullan.
+                            q_text_html = get_inner_html(title_elem) if title_elem else q_text_html_fallback
+                            q_desc_html = get_inner_html(desc_elem) if desc_elem else q_desc_html_fallback
                             
                             img_elem = item_container.select_one('.y6GzNb img')
                             if img_elem and img_elem.has_attr('src'):
                                 question['image_url'] = img_elem.get('src')
+                        else:
+                            # Eğer HTML container bulunamazsa, yedek metinleri kullan.
+                            q_text_html = q_text_html_fallback
+                            q_desc_html = q_desc_html_fallback
 
                         question['text'] = q_text_html
                         question['description'] = q_desc_html
+                        # ================== BİTİŞ: ZENGİN METİN DÜZELTMESİ ==================
 
-                        if q_type == 6:
+                        if q_type == 6: # Başlık/Açıklama bölümü
                             question['type'] = 'Başlık'
                             form_data['questions'].append(question)
+                            continue
+
+                        # 'NoneType' hatasını önlemek için kontrolü, bu verinin gerçekten
+                        # gerekli olduğu yere taşıdık. Bu, başlık gibi öğelerin etkilenmemesini sağlar.
+                        if not (len(q_data) > 4 and q_data[4] and q_data[4][0]):
+                            print(f"DEBUG: Soru (ID: {item_id}, Tip: {q_type}) desteklenmeyen bir yapıya sahip. Soru atlanıyor.")
                             continue
 
                         if q_type == 7:
@@ -143,11 +154,13 @@ def analyze_google_form(url: str):
                             question['options'] = [str(o[0]) for o in q_info[1]]
                         elif q_type == 9: question['type'] = 'Tarih'
                         elif q_type == 10: question['type'] = 'Saat'
-                        else: continue
+                        else: 
+                            print(f"DEBUG: Bilinmeyen soru tipi (Tip Kodu: {q_type}, ID: {item_id}) atlanıyor.")
+                            continue
 
                         form_data['questions'].append(question)
                     except (IndexError, TypeError, KeyError) as e:
-                        print(f"DEBUG: Bir soru işlenirken hata oluştu (ID: {q_data[0]}). Soru atlanıyor. Hata: {e}")
+                        print(f"DEBUG: Bir soru işlenirken istisnai bir hata oluştu (ID: {q_data[0]}). Soru atlanıyor. Hata: {e}")
                         continue
                 break
             except (json.JSONDecodeError, IndexError, TypeError) as e:
@@ -182,8 +195,9 @@ body{font-family:Arial,sans-serif;background:#f4f7fa;margin:0;padding:2rem;displ
 h1{text-align:center;margin:0 0 1rem}
 .form-group{margin-bottom:1.6rem;padding:1.2rem;border:1px solid #dbe2e9;border-radius:8px;background:#fdfdff}
 .question-label{display:block;font-weight:600;margin-bottom:.9rem}
+.question-label p, .question-description p, .main-description p { margin: 0 0 0.5rem; }
+.question-label ul, .question-label ol, .question-description ul, .question-description ol, .main-description ul, .main-description ol { margin-top: 0.5rem; padding-left: 1.5rem; margin-bottom: 0.5rem;}
 .question-description{white-space:pre-wrap;color:#666;line-height:1.4;margin-top:-0.5rem;margin-bottom:0.9rem;font-size:0.9rem}
-.question-description ul,.question-description ol{margin-top:0.5rem;padding-left:1.5rem;}
 .required-star{color:#e74c3c;margin-left:4px}
 input[type=text],input[type=email],textarea,select,input[type=date],input[type=time]{width:100%;padding:.8rem 1rem;border:1px solid #dbe2e9;border-radius:6px;box-sizing:border-box;font-size:1rem}
 textarea{min-height:100px;resize:vertical}
@@ -209,7 +223,6 @@ input[type=radio],input[type=checkbox]{flex-shrink:0;margin-top:0.3rem;width:1.1
 .section-title{margin-top:0;margin-bottom:0.5rem;font-size:1.3em;color:#2c3e50}
 .section-description{white-space:pre-wrap;color:#555;line-height:1.5;margin-top:0;font-size:0.95em}
 .main-description{white-space:pre-wrap;color:#555;line-height:1.5;}
-.main-description ul,.main-description ol{margin-top:0.5rem;padding-left:1.5rem;}
 .form-image-container{text-align:center;margin-bottom:1rem;margin-top:1rem;}
 .form-image-container img{max-width:100%;height:auto;max-height:450px;border-radius:8px;border:1px solid #eee;}
 .option-content{display:flex;flex-direction:column;align-items:flex-start;width:100%}
@@ -298,50 +311,34 @@ input[type=radio],input[type=checkbox]{flex-shrink:0;margin-top:0.3rem;width:1.1
 {% endif %}
 </div>
 
-<!-- ================== BAŞLANGIÇ: JAVASCRIPT DÜZELTMELERİ ================== -->
 <script>
 document.addEventListener('DOMContentLoaded', () => {
-    /*
-     * DÜZELTME 1: Radyo düğmelerinin seçiminin kaldırılmasına izin ver.
-     * Kullanıcı, seçili bir radyo düğmesine tekrar tıkladığında seçimin kaldırılmasını istedi.
-     * Bu betik, bu davranışı etkinleştirir.
-     */
     let radioMouseDownChecked;
 
     document.body.addEventListener('mousedown', e => {
-        // Olay hedefi bir radyo düğmesiyse, 'checked' durumunu yakala.
         if (e.target.tagName === 'INPUT' && e.target.type === 'radio') {
             radioMouseDownChecked = e.target.checked;
         }
-    }, true); // Olayın state'i değiştirmesinden önce çalışmasını sağlamak için yakalama fazını kullan
+    }, true); 
 
     document.body.addEventListener('click', e => {
-        // Eğer olay hedefi bir radyo düğmesiyse ve mousedown'da zaten işaretliyse
         if (e.target.tagName === 'INPUT' && e.target.type === 'radio' && radioMouseDownChecked) {
-            // bu tıklama seçimi kaldırmalıdır.
             e.target.checked = false;
         }
     });
 
-    /*
-     * DÜZELTME 2: "Diğer" metin alanına yazarken ilgili seçeneği otomatik olarak işaretle.
-     * Kullanıcı, "Diğer" kutusunu işaretlemeden metin girdiğinde, sorunun cevaplanmamış sayılmasını önler.
-     */
     document.querySelectorAll('.other-option-input').forEach(textInput => {
         const checkAssociatedControl = () => {
-            // En yakın üst <label> içindeki ilgili radyo veya onay kutusunu bul.
             const associatedControl = textInput.closest('label').querySelector('input[type=radio], input[type=checkbox]');
             if (associatedControl) {
                 associatedControl.checked = true;
             }
         };
-        // Kullanıcı metin alanına odaklandığında veya yazdığında dinleyiciyi tetikle.
         textInput.addEventListener('input', checkAssociatedControl);
         textInput.addEventListener('focus', checkAssociatedControl);
     });
 });
 </script>
-<!-- ================== BİTİŞ: JAVASCRIPT DÜZELTMELERİ ================== -->
 
 </body></html>
 """
@@ -373,7 +370,8 @@ def submit():
         
         if q_type == 'Başlık':
             continue
-
+        
+        # Cevapları Excel'e yazarken daha temiz bir başlık için HTML etiketlerini kaldır
         q_text_plain = BeautifulSoup(question['text'], "html.parser").get_text(separator=" ", strip=True)
 
         if 'Tablo' in q_type:
@@ -397,7 +395,6 @@ def submit():
             if "__other_option__" in answers:
                 answers.remove("__other_option__")
                 other_txt = user_answers.get(f"{entry}.other_option_response", "").strip()
-                # JavaScript düzeltmesi sayesinde, metin kutusuna yazıldığında __other_option__ seçilecektir.
                 final.append(f"Diğer: {other_txt}" if other_txt else "Diğer (belirtilmemiş)")
             final.extend(answers)
             if final: answer_str = ', '.join(final)
@@ -405,7 +402,6 @@ def submit():
             ans = user_answers.get(entry)
             if ans == "__other_option__":
                 other_txt = user_answers.get(f"{entry}.other_option_response", "").strip()
-                # JavaScript düzeltmesi sayesinde, metin kutusuna yazıldığında ans __other_option__ olacaktır.
                 answer_str = f"Diğer: {other_txt}" if other_txt else "Diğer (belirtilmemiş)"
             elif ans:
                 answer_str = ans
@@ -423,8 +419,11 @@ def submit():
         df.to_excel(writer, index=False, sheet_name=sheet)
         ws = writer.sheets[sheet]
         for i, col in enumerate(df.columns):
-            col_width = max(df[col].astype(str).map(len).max(), len(col))
-            ws.column_dimensions[chr(65 + i)].width = min(col_width + 2, 70)
+            max_len = max(
+                df[col].astype(str).map(len).max(),
+                len(col)
+            )
+            ws.column_dimensions[chr(65 + i)].width = min(max_len + 2, 70)
     output.seek(0)
     session.pop('form_structure', None)
     return send_file(output,
@@ -434,4 +433,5 @@ def submit():
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=False) # Debug'ı production için kapatmak daha iyidir.
+    # Geliştirme ortamında debug=True, production'da debug=False olmalıdır.
+    app.run(host='0.0.0.0', port=port, debug=True)
