@@ -1,25 +1,29 @@
 # -*- coding: utf-8 -*-
 """
 Google Form Klonlayıcı - Nihai Sürüm
+Production (Railway / Render / Heroku) uyumlu.
 - SECRET_KEY .env / ortam değişkeninden okunur
 - Gunicorn ile çalıştırılabilir
-- Google Form verisini çekip yeniden oluşturur ve cevapları Excel + çekilen HTML ile zip içinde indirir
-- Zengin metin (bold/italic/underline/link) ve HTML içerikleri yakalanır
-- Başlık / Media gibi soru olmayan öğeler de Excel'de yer alır
-- JS sonrası DOM için Playwright ile render
+- Google Form verisini çekip yeniden oluşturur ve cevapları Excel indirir
+- Zengin Metin Desteği: Başlık/Açıklama, kalın, italik, altı çizili, link ve listeleri tam olarak korur.
+- Medya Desteği: Sorulara ve seçeneklere eklenen görselleri destekler.
+- Doğru Bölümleme: Google Formlar'daki "Bölüm" mantığını çok sayfalı form olarak doğru şekilde uygular.
+- JS sonrası DOM alınması için Playwright ile render edilme (zengin formatlamayı almak için).
+- UX Düzeltmeleri: "Diğer" seçeneği ve radyo düğmesi seçimini kaldırma gibi JS iyileştirmeleri içerir.
+- Kısa Link Desteği: 'forms.gle' linklerini otomatik olarak çözer.
+- Ekstra Excel sütunları: soru/cevap HTML’leri ve biçimlendirme varlıkları (bold, italic, underline, link).
 """
 
 import os
 import io
 import json
 import traceback
-import zipfile
 import requests
 import pandas as pd
 from bs4 import BeautifulSoup
 from flask import Flask, request, render_template_string, send_file, session
 
-# Playwright import (fallback varsa çalışmaya devam eder)
+# Playwright import; yoksa fallback'a düşecek
 try:
     from playwright.sync_api import sync_playwright, TimeoutError as PWTimeoutError
     PLAYWRIGHT_AVAILABLE = True
@@ -34,6 +38,9 @@ USER_AGENT = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
 
 
 def fetch_rendered_html(url: str) -> str:
+    """
+    Playwright ile sayfayı JS sonrası render edip HTML içeriğini döner.
+    """
     if not PLAYWRIGHT_AVAILABLE:
         raise RuntimeError("Playwright yüklü değil.")
     try:
@@ -44,7 +51,7 @@ def fetch_rendered_html(url: str) -> str:
             try:
                 page.wait_for_selector('.M7eMe', timeout=10000)
             except PWTimeoutError:
-                pass
+                pass  # Yine de içeriği al
             content = page.content()
             browser.close()
             return content
@@ -55,10 +62,16 @@ def fetch_rendered_html(url: str) -> str:
 
 
 def get_inner_html(element):
+    """
+    HTML içerikleri biçimlendirme etiketleriyle birlikte döner (b, i, u, a, ul, ol, li).
+    Gereksiz <font> gibi etiketleri kaldırır ve inline style'dan semantik dönüşüm yapar.
+    """
     if not element:
         return ""
+
     for span in element.find_all("span"):
         style = (span.get("style") or "").lower()
+        # semantik olmayan stil -> etikete çevir
         if "font-weight:700" in style or "bold" in style:
             span.name = "b"
             span.attrs = {}
@@ -68,13 +81,20 @@ def get_inner_html(element):
         elif "text-decoration:underline" in style or "underline" in style:
             span.name = "u"
             span.attrs = {}
+
     for tag in element.find_all(['font']):
         tag.unwrap()
+
     return element.decode_contents().strip()
 
 
 def detect_formatting(html: str):
+    """
+    Verilen HTML içinde bold/italic/underline/link var mı tespit eder.
+    Hem etiketlere hem inline style'a bakar.
+    """
     soup = BeautifulSoup(html or "", "html.parser")
+    # Bold: <b>, <strong>, style font-weight
     bold = bool(
         soup.find(['b', 'strong']) or
         any(
@@ -83,19 +103,28 @@ def detect_formatting(html: str):
             for tag in soup.find_all(['span', 'div', 'p'])
         )
     )
+    # Italic: <i> veya style font-style:italic
     italic = bool(
         soup.find('i') or
         any('font-style:italic' in (tag.get('style') or '').lower() for tag in soup.find_all(['span', 'div', 'p']))
     )
+    # Underline: <u> veya style içinde underline
     underline = bool(
         soup.find('u') or
         any('underline' in (tag.get('style') or '').lower() for tag in soup.find_all(['span', 'div', 'p']))
     )
+    # Link: <a>
     link = bool(soup.find('a'))
-    return {'bold': bold, 'italic': italic, 'underline': underline, 'link': link}
+    return {
+        'bold': bold,
+        'italic': italic,
+        'underline': underline,
+        'link': link,
+    }
 
 
 def analyze_google_form(url: str):
+    """Google Form URL'sini parse ederek form yapısını döndürür."""
     try:
         headers = {'User-Agent': USER_AGENT}
         html_text = None
@@ -104,7 +133,7 @@ def analyze_google_form(url: str):
             try:
                 html_text = fetch_rendered_html(url)
             except Exception:
-                html_text = None
+                html_text = None  # fallback yapılacak
 
         if not html_text:
             try:
@@ -262,8 +291,6 @@ def analyze_google_form(url: str):
 
         if not form_data['pages'] or not form_data['pages'][0]:
             return {"error": "Formda analiz edilecek soru veya bölüm bulunamadı."}
-        # ham HTML'i de döndür
-        form_data['_raw_html'] = html_text
         return form_data
 
     except Exception as e:
@@ -506,6 +533,7 @@ def submit():
 
     user_answers = request.form
     results = []
+
     all_questions = []
     for page in form_structure.get('pages', []):
         all_questions.extend(page)
@@ -514,6 +542,9 @@ def submit():
 
     for question in all_questions:
         q_type = question.get('type')
+        if not q_type or q_type in ['Başlık', 'Media']:
+            continue
+
         q_text_html = question.get('text') or ''
         q_desc_html = question.get('description') or ''
         q_text_plain = BeautifulSoup(q_text_html, "html.parser").get_text(separator=" ", strip=True)
@@ -521,25 +552,10 @@ def submit():
             q_text_plain = f"[İsimsiz Soru - Tip: {q_type}]"
 
         formatting = detect_formatting(q_text_html)
+
         if debug:
             print("DEBUG question HTML:", q_text_html)
             print("DEBUG formatting:", formatting)
-
-        if q_type in ['Başlık', 'Media']:
-            # cevap yok, sadece bilgi
-            results.append({
-                "Soru": q_text_plain,
-                "Soru Tipi": q_type,
-                "Cevap": "",
-                "Soru HTML": q_text_html,
-                "Soru Açıklama HTML": q_desc_html,
-                "Cevap HTML": "",
-                "Soru Bold Var": formatting['bold'],
-                "Soru Italic Var": formatting['italic'],
-                "Soru Underline Var": formatting['underline'],
-                "Soru Link Var": formatting['link'],
-            })
-            continue
 
         if 'Tablo' in q_type:
             for row in question['rows']:
@@ -622,35 +638,20 @@ def submit():
         })
 
     df = pd.DataFrame(results)
-
-    # Excel dosyasını oluştur
-    excel_buffer = io.BytesIO()
-    with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
         sheet = 'Form Cevaplari'
         df.to_excel(writer, index=False, sheet_name=sheet)
         ws = writer.sheets[sheet]
         for i, col in enumerate(df.columns):
             col_width = max(df[col].astype(str).map(len).max(), len(col))
             ws.column_dimensions[chr(65 + i)].width = min(col_width + 2, 70)
-    excel_buffer.seek(0)
-
-    # Ham HTML'i al
-    raw_html = form_structure.get('_raw_html', '')
-    if not raw_html:
-        raw_html = "<!-- Raw HTML bulunamadı -->"
-
-    # Zip içine koy
-    zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as z:
-        z.writestr("form_cevaplari.xlsx", excel_buffer.getvalue())
-        z.writestr("fetched_form.html", raw_html)
-    zip_buffer.seek(0)
-
+    output.seek(0)
     session.pop('form_structure', None)
-    return send_file(zip_buffer,
-                     mimetype='application/zip',
+    return send_file(output,
+                     mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                      as_attachment=True,
-                     download_name='form_results.zip')
+                     download_name='form_cevaplari.xlsx')
 
 
 if __name__ == '__main__':
