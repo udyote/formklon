@@ -172,59 +172,136 @@ def analyze_google_form(url: str):
         return {"error": "Formda analiz edilecek soru veya içerik bulunamadı."}
     return form_data
 
-
+# ================================== BAŞLANGIÇ: TASARIM GÜNCELLENDİ ==================================
 HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="tr"><head><meta charset="UTF-8"><title>Google Form Klonlayıcı</title>
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
 <style>
-body{font-family:Arial,sans-serif;background:#f4f7fa;margin:0;padding:2rem;display:flex;justify-content:center}
-.container{max-width:760px;width:100%;background:#fff;padding:2rem 2.2rem;border-radius:12px;box-shadow:0 10px 25px rgba(0,0,0,.08)}
-h1{text-align:center;margin:0 0 1rem}
-.form-group{margin-bottom:1.6rem;padding:1.2rem;border:1px solid #dbe2e9;border-radius:8px;background:#fdfdff}
-.question-label{display:block;font-weight:600;margin-bottom:.9rem}
-.question-description{white-space:pre-wrap;color:#666;line-height:1.4;margin-top:-0.5rem;margin-bottom:0.9rem;font-size:0.9rem}
+:root {
+    --bs-green: #198754;
+    --bs-dark-green: #157347;
+    --bs-border-color: #dee2e6;
+    --bs-input-border-color: #ced4da;
+    --bs-body-bg: #f8f9fa;
+    --bs-body-color: #212529;
+    --bs-secondary-color: #6c757d;
+    --bs-focus-ring-color: rgba(13, 110, 253, 0.25);
+    --bs-focus-border-color: #86b7fe;
+}
+body{
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", "Noto Sans", "Liberation Sans", Arial, sans-serif;
+    background-color: var(--bs-body-bg);
+    color: var(--bs-body-color);
+    margin:0;
+    padding:2rem;
+    display:flex;
+    justify-content:center;
+}
+.container{
+    max-width:760px;
+    width:100%;
+    background:#fff;
+    padding:2rem 2.5rem;
+    border-radius:8px;
+    box-shadow:0 4px 15px rgba(0,0,0,.07);
+    border: 1px solid var(--bs-border-color);
+}
+h1, h2{text-align:center;color:#343a40;font-weight:600;}
+h1{margin:0 0 1rem}
+h2{margin-top:2rem;}
+a {color: var(--bs-green); text-decoration: underline;}
+a:hover {text-decoration: none;}
+.form-group{
+    margin-bottom:1.5rem;
+    padding:1.5rem;
+    border:1px solid var(--bs-border-color);
+    border-radius:8px;
+}
+.question-label{
+    display:block;
+    font-weight:600;
+    margin-bottom:.75rem;
+    color: var(--bs-body-color);
+    line-height:1.4;
+}
+.question-description{
+    white-space:pre-wrap;
+    color: var(--bs-secondary-color);
+    line-height:1.5;
+    margin-top:-0.5rem;
+    margin-bottom:1rem;
+    font-size:0.9rem;
+}
 .question-description ul,.question-description ol{margin-top:0.5rem;padding-left:1.5rem;}
-.required-star{color:#e74c3c;margin-left:4px}
-input[type=text],input[type=email],textarea,select,input[type=date],input[type=time]{width:100%;padding:.8rem 1rem;border:1px solid #dbe2e9;border-radius:6px;box-sizing:border-box;font-size:1rem}
+.required-star{color:#dc3545;margin-left:4px}
+input[type=text],input[type=email],textarea,select,input[type=date],input[type=time]{
+    width:100%;
+    padding:.5rem 1rem;
+    border:1px solid var(--bs-input-border-color);
+    border-radius: 0.375rem;
+    box-sizing:border-box;
+    font-size:1rem;
+    line-height: 1.5;
+    transition: border-color .15s ease-in-out, box-shadow .15s ease-in-out;
+}
 textarea{min-height:100px;resize:vertical}
-input:focus,textarea:focus,select:focus{outline:none;border-color:#4a80ff;box-shadow:0 0 0 3px rgba(74,128,255,.2)}
-.radio-group,.checkbox-group{display:flex;flex-direction:column;gap:.6rem}
-.radio-group label,.checkbox-group label{display:flex;align-items:flex-start;gap:.8rem;cursor:pointer;padding:.6rem .7rem;border-radius:6px}
-.radio-group label:hover,.checkbox-group label:hover{background:#f0f4ff}
-input[type=radio],input[type=checkbox]{flex-shrink:0;margin-top:0.3rem;width:1.1rem;height:1.1rem;accent-color:#4a80ff}
-.btn{background:#4a80ff;color:#fff;padding:.9rem 1.4rem;border:none;width:100%;border-radius:6px;font-size:1.05rem;font-weight:600;cursor:pointer}
-.btn:hover{background:#3c6de0}
-.error-message{background:#e74c3c;color:#fff;padding:1rem;border-radius:6px;text-align:center}
+input:focus,textarea:focus,select:focus{
+    outline:none;
+    border-color: var(--bs-focus-border-color);
+    box-shadow:0 0 0 0.25rem var(--bs-focus-ring-color);
+}
+.radio-group,.checkbox-group{display:flex;flex-direction:column;gap:.5rem}
+.radio-group label,.checkbox-group label{display:flex;align-items:flex-start;gap:.8rem;cursor:pointer;padding:.5rem .7rem;border-radius:6px}
+.radio-group label:hover,.checkbox-group label:hover{background-color: #f8f9fa;}
+input[type=radio],input[type=checkbox]{flex-shrink:0;margin-top:0.3rem;width:1.1rem;height:1.1rem;accent-color: var(--bs-green);}
+.btn{
+    background-color: var(--bs-green);
+    color:#fff;
+    padding:.75rem 1.5rem;
+    border:1px solid var(--bs-green);
+    width:100%;
+    border-radius: 0.375rem;
+    font-size:1rem;
+    font-weight:600;
+    cursor:pointer;
+    text-align: center;
+    transition: background-color .15s ease-in-out, border-color .15s ease-in-out;
+}
+.btn:hover{
+    background-color: var(--bs-dark-green);
+    border-color: #146c43;
+}
+.error-message{background:#f8d7da;color:#58151c;border: 1px solid #f1aeb5;padding:1rem;border-radius:6px;text-align:center}
 .grid-table{width:100%;border-collapse:collapse;margin-top:.5rem}
-.grid-table th,.grid-table td{border:1px solid #dbe2e9;padding:.6rem;text-align:center;font-size:.9rem}
+.grid-table th,.grid-table td{border:1px solid var(--bs-border-color);padding:.6rem;text-align:center;font-size:.9rem}
 .grid-table th{background:#f8f9fa}
 .grid-table td:first-child{text-align:left;font-weight:600}
 .rating-group{display:flex;flex-direction:row-reverse;justify-content:center;gap:5px}
 .rating-group input{display:none}
 .rating-group label{font-size:2rem;color:#ccc;cursor:pointer}
-.rating-group input:checked ~ label,.rating-group label:hover,.rating-group label:hover ~ label{color:#f39c12}
+.rating-group input:checked ~ label,.rating-group label:hover,.rating-group label:hover ~ label{color:#ffc107}
 .other-option-label{align-items:center}
-.other-option-input{flex-grow:1;padding:.4rem .6rem}
-.title-description-block{padding-bottom:1rem;border-bottom:1px solid #eee;margin-bottom:1.6rem}
-.section-title{margin-top:0;margin-bottom:0.5rem;font-size:1.3em;color:#2c3e50}
-.section-description{white-space:pre-wrap;color:#555;line-height:1.5;margin-top:0;font-size:0.95em}
-.main-description{white-space:pre-wrap;color:#555;line-height:1.5;}
+.other-option-input{flex-grow:1;margin-left: .5rem; padding:.4rem .6rem}
+.title-description-block{padding-bottom:1rem;border-bottom:1px solid var(--bs-border-color);margin-bottom:1.6rem}
+.section-title{margin-top:0;margin-bottom:0.5rem;font-size:1.3em;color:var(--bs-body-color);}
+.section-description{white-space:pre-wrap;color:var(--bs-secondary-color);line-height:1.5;margin-top:0;font-size:0.95em}
+.main-description{white-space:pre-wrap;color: var(--bs-secondary-color); line-height:1.5;}
 .main-description ul,.main-description ol{margin-top:0.5rem;padding-left:1.5rem;}
 .form-image-container{text-align:center;margin-bottom:1rem;margin-top:1rem;}
-.form-image-container img{max-width:100%;height:auto;max-height:450px;border-radius:8px;border:1px solid #eee;}
+.form-image-container img{max-width:100%;height:auto;max-height:450px;border-radius:8px;border:1px solid var(--bs-border-color);}
 .option-content{display:flex;flex-direction:column;align-items:flex-start;width:100%}
-.option-image-container img{max-width:260px;width:100%;height:auto;display:block;margin-bottom:0.6rem;border-radius:6px;border:1px solid #e0e0e0;}
+.option-image-container img{max-width:260px;width:100%;height:auto;display:block;margin-bottom:0.6rem;border-radius:6px;border:1px solid var(--bs-border-color);}
 .option-text{line-height:1.4}
 </style></head>
 <body><div class="container">
 <h1>Google Form Klonlayıcı</h1>
-<form method="post" action="/"><div class="form-group" style="padding:0.8rem;">
+<form method="post" action="/"><div class="form-group" style="padding:1rem;">
 <input type="text" name="url" placeholder="https://docs.google.com/forms/d/e/..." required>
-<button type="submit" class="btn" style="margin-top:.8rem;">Formu Oluştur</button>
+<button type="submit" class="btn" style="margin-top:1rem;">Formu Oluştur</button>
 </div></form>
 {% if error %}<div class="error-message">{{ error }}</div>{% endif %}
 {% if form_data %}
-<h2 style="text-align:center;margin-top:1.5rem;">{{ form_data.title | safe }}</h2>
+<h2 style="text-align:center;margin-top:1.5rem; line-height: 1.4;">{{ form_data.title | safe }}</h2>
 {% if form_data.description %}<div class="main-description">{{ form_data.description | safe }}</div>{% endif %}
 <form method="post" action="/submit">
 {% for q in form_data.questions %}
@@ -345,6 +422,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
 </body></html>
 """
+# =================================== BİTİŞ: TASARIM GÜNCELLENDİ ===================================
 
 @app.route('/', methods=['GET', 'POST'])
 def index():
