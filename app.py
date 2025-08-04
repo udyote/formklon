@@ -27,7 +27,7 @@ def get_inner_html(element):
     """Bir BeautifulSoup elementinin iç HTML'ini string olarak döndürür."""
     if not element:
         return ""
-    # Google'ın eklediği <font> etiketleri gibi gereksiz etiketleri temizle
+    # Google'ın eklediği <font> gibi gereksiz etiketleri kaldır ama içeriğini koru
     for unwanted_tag in element.find_all(['font']):
         unwanted_tag.unwrap()
     return "".join(map(str, element.contents)).strip()
@@ -88,13 +88,13 @@ def analyze_google_form(url: str):
                         question = {'image_url': None}
                         item_container = soup.find('div', {'data-item-id': str(item_id)})
                         
-                        # === ZENGİN METİN İYİLEŞTİRMESİ ===
+                        # === ÇÖZÜM ADIM 1: ZENGİN METİNİ GÜVENİLİR ŞEKİLDE ÇEKME ===
                         # JSON verisindeki düz metin yerine, doğrudan HTML'den zengin metni al.
-                        # Soru başlığı genellikle bu iki seçiciden birine uyar.
+                        # Bu sınıflar Google Formlar'da başlık ve açıklamalar için kullanılır.
                         q_text_element = item_container.select_one('.M7eMe') if item_container else None
-                        # Soru açıklaması bu seçiciye uyar.
                         q_desc_element = item_container.select_one('.OIC90c') if item_container else None
-
+                        
+                        # Zengin metin (HTML) alınır. Eğer bulunamazsa JSON'daki düz metin kullanılır.
                         question['text'] = get_inner_html(q_text_element) if q_text_element else q_data[1]
                         question['description'] = get_inner_html(q_desc_element) if q_desc_element else (q_data[2] if len(q_data) > 2 and q_data[2] else "")
                         
@@ -102,13 +102,11 @@ def analyze_google_form(url: str):
                             img_elem = item_container.select_one('.y6GzNb img')
                             if img_elem and img_elem.has_attr('src'): question['image_url'] = img_elem.get('src')
                         
-                        # Sadece başlık/medya içeren bloklar (soru olmayanlar)
                         if q_data[4] is None:
                             current_page.append({'type': 'Media', 'text': question['text'], 'description': question['description'], 'image_url': question['image_url']})
                             continue
 
-                        # Grid (Tablo) Tipi Sorular
-                        if q_type == 7:
+                        if q_type == 7: # Grid Tipi Sorular
                             rows_data = q_data[4]
                             if not (isinstance(rows_data, list) and rows_data): continue
                             first_row = rows_data[0]
@@ -117,7 +115,6 @@ def analyze_google_form(url: str):
                             question['cols'] = [c[0] for c in first_row[1]]
                             question['rows'] = [{'text': r[3][0], 'entry_id': f"entry.{r[0]}"} for r in rows_data]
                         else:
-                            # Diğer Tüm Soru Tipleri
                             q_info = q_data[4][0]
                             question['entry_id'] = f"entry.{q_info[0]}"
                             question['required'] = bool(q_info[2])
@@ -287,6 +284,7 @@ input[type=radio],input[type=checkbox]{flex-shrink:0;margin-top:0.3rem;width:1.1
         </div>
         {% else %}
         <div class="form-group">
+            {# === ÇÖZÜM ADIM 2: EKSİK `| safe` FİLTRESİNİ EKLEME === #}
             <div class="question-label">{{ q.text | safe }} {% if q.required %}<span class="required-star">*</span>{% endif %}</div>
             {% if q.description %}<div class="question-description">{{ q.description | safe }}</div>{% endif %}
             {% if q.image_url %}<div class="form-image-container"><img src="{{ q.image_url }}" alt="Soru Görseli"></div>{% endif %}
@@ -368,15 +366,39 @@ function showPage(index) {
 
 function validatePage(pageIndex) {
     const currentPage = pages[pageIndex];
-    if (!currentPage) return false;
+    if (!currentPage) return true; // Boş sayfayı geçerli say
+
     const form = document.getElementById('clone-form');
-    // reportValidity sadece görünür olan ilk geçersiz eleman için raporlama yapar.
-    // Bu yüzden formun tamamında checkValidity() kullanmak daha güvenilir olabilir.
-    if (!form.checkValidity()) {
-        form.reportValidity();
-        return false;
+    const inputs = currentPage.querySelectorAll('[required]');
+    let allValid = true;
+
+    for (const input of inputs) {
+        if (input.type === 'radio') {
+            const name = input.name;
+            const group = currentPage.querySelectorAll(`input[name="${name}"]`);
+            if (!Array.from(group).some(radio => radio.checked)) {
+                allValid = false;
+                break;
+            }
+        } else {
+             if (!input.checkValidity()) {
+                allValid = false;
+                break;
+            }
+        }
     }
-    return true;
+
+    if (!allValid) {
+        // Formun kendi raporlama mekanizmasını tetikle
+        const tempSubmit = document.createElement('button');
+        tempSubmit.type = 'submit';
+        tempSubmit.style.display = 'none';
+        form.appendChild(tempSubmit);
+        tempSubmit.click();
+        form.removeChild(tempSubmit);
+    }
+    
+    return allValid;
 }
 
 function navigate(direction) {
