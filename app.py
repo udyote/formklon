@@ -1,20 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-Google Form Klonlayıcı
+Google Form Klonlayıcı - Nihai Sürüm
 Production (Railway / Render / Heroku) uyumlu.
 - SECRET_KEY .env / ortam değişkeninden okunur
 - Gunicorn ile çalıştırılabilir
 - Google Form verisini çekip yeniden oluşturur ve cevapları Excel indirir
-- Başlık/Açıklama bölümlerini ve soru açıklamalarını destekler
-- Kalın, italik, altı çizili, link ve liste gibi zengin metin formatlarını korur
-- Sorulara ve seçeneklere eklenen görselleri destekler (Yeniden düzenlenmiş hibrit yaklaşım)
-- KULLANICI GERİ BİLDİRİM DÜZELTMELERİ UYGULANDI:
-  - FIX: "Diğer" seçeneğinin metin alanına yazıldığında otomatik olarak işaretlenmesi sağlandı.
-  - FIX: Çoktan seçmeli seçeneklerin (radyo düğmeleri) tekrar tıklanarak seçiminin kaldırılması sağlandı.
-  - FIX: Kısaltılmış 'forms.gle' linklerini takip ederek ana formu bulur.
-  - FIX: Metin başlığı olmayan (sadece görsel/video içeren) soruların çökmesini engeller.
-  - FIX: Zengin metin formatlama (bold, italic, link, liste) özellikleri geri getirildi.
-  - FIX: Google Formlar'daki "Bölüm" mantığı artık doğru şekilde çalışıyor ve sadece gerçek bölümleri sayfa olarak ayırıyor.
+- Zengin Metin Desteği: Başlık/Açıklama, kalın, italik, altı çizili, link ve listeleri tam olarak korur.
+- Medya Desteği: Sorulara ve seçeneklere eklenen görselleri destekler.
+- Doğru Bölümleme: Google Formlar'daki "Bölüm" mantığını çok sayfalı form olarak doğru şekilde uygular.
+- UX Düzeltmeleri: "Diğer" seçeneği ve radyo düğmesi seçimini kaldırma gibi JS iyileştirmeleri içerir.
+- Kısa Link Desteği: 'forms.gle' linklerini otomatik olarak çözer.
 """
 
 import os
@@ -35,7 +30,7 @@ def get_inner_html(element):
     return "".join(map(str, element.contents)).strip()
 
 def analyze_google_form(url: str):
-    """Google Form URL'sini parse ederek DOĞRU çok sayfalı yapı, zengin metin ve görselleri içeren form yapısını döndürür."""
+    """Google Form URL'sini parse ederek zengin metin, görseller ve doğru bölümlemeyi içeren form yapısını döndürür."""
     try:
         headers = {
             'User-Agent': ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36')
@@ -51,11 +46,14 @@ def analyze_google_form(url: str):
 
     soup = BeautifulSoup(response.text, 'html.parser')
     form_data = {"pages": []}
-
+    
+    # === ESKİ KODDAN GELEN GÜVENİLİR BAŞLIK/AÇIKLAMA ALMA YÖNTEMİ ===
+    # .text yerine get_inner_html kullanarak zengin metni (<b>, <a> vb.) koruyoruz.
     title_div = soup.find('div', class_='F9yp7e')
     form_data['title'] = get_inner_html(title_div) if title_div else "İsimsiz Form"
     desc_div = soup.find('div', class_='cBGGJ')
     form_data['description'] = get_inner_html(desc_div) if desc_div else ""
+
 
     for script in soup.find_all('script'):
         if script.string and 'FB_PUBLIC_LOAD_DATA_' in script.string:
@@ -87,17 +85,14 @@ def analyze_google_form(url: str):
                         question = {'image_url': None}
                         item_container = soup.find('div', {'data-item-id': str(item_id)})
                         
-                        # === ZENGİN METİN DÜZELTMESİ: Veriyi doğrudan JSON'dan al ===
                         question['text'] = q_data[1]
                         question['description'] = q_data[2] if len(q_data) > 2 and q_data[2] else ""
                         
-                        # Sadece resim gibi ek veriler için HTML'i parse et
                         if item_container:
                             img_elem = item_container.select_one('.y6GzNb img')
                             if img_elem and img_elem.has_attr('src'): question['image_url'] = img_elem.get('src')
                         
                         if q_data[4] is None:
-                            # Bu muhtemelen sadece video/resim gibi bir öğedir, soru değildir.
                             current_page.append({'type': 'Media', 'text': question['text'], 'description': question['description'], 'image_url': question['image_url']})
                             continue
 
@@ -125,7 +120,7 @@ def analyze_google_form(url: str):
                                     option_html_elements = item_container.select('.docssharedWizToggleLabeledContainer') if item_container else []
                                     for i, opt in enumerate(q_info[1]):
                                         if len(opt) > 4 and opt[4]: question['has_other'] = True; continue
-                                        if not opt[0]: continue
+                                        if not opt[0] and opt[0] != "": continue
                                         opt_image_url = None
                                         if i < len(option_html_elements):
                                             img_tag = option_html_elements[i].select_one('.LAANW img.QU5LQc')
@@ -148,7 +143,6 @@ def analyze_google_form(url: str):
                         
                         current_page.append(question)
 
-                        # === DOĞRU BÖLÜM MANTIĞI ===
                         is_page_break = len(q_data) > 12 and q_data[12]
                         if is_page_break:
                             form_data['pages'].append(current_page)
@@ -249,7 +243,7 @@ input[type=radio],input[type=checkbox]{flex-shrink:0;margin-top:0.3rem;width:1.1
 .title-description-block{padding-bottom:1rem;border-bottom:1px solid var(--bs-border-color);margin-bottom:1.6rem}
 .section-title{margin-top:0;margin-bottom:0.5rem;font-size:1.3em;color:var(--bs-body-color);}
 .section-description{white-space:pre-wrap;color:var(--bs-secondary-color);line-height:1.5;margin-top:0;font-size:0.95em}
-.main-description{white-space:pre-wrap;color: var(--bs-secondary-color); line-height:1.5;}
+.main-description{white-space:pre-wrap;color: var(--bs-body-color); line-height:1.5;}
 .main-description ul,.main-description ol{margin-top:0.5rem;padding-left:1.5rem;}
 .form-image-container{text-align:center;margin-bottom:1rem;margin-top:1rem;}
 .form-image-container img{max-width:100%;height:auto;max-height:450px;border-radius:8px;border:1px solid var(--bs-border-color);}
