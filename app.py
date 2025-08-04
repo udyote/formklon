@@ -23,40 +23,35 @@ from flask import Flask, request, render_template_string, send_file, session
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-fallback-key")
 
-# === KESİN ÇÖZÜM: KULLANICININ SAĞLADIĞI GELİŞMİŞ FONKSİYON ===
+# === KESİN ÇÖZÜM: KULLANICININ SAĞLADIĞI, decode_contents() KULLANAN NİHAİ FONKSİYON ===
 def get_inner_html(element):
     """
-    Bir BeautifulSoup elementinin iç HTML'ini string olarak döndürür.
-    Google Form'un kullandığı <span style="..."> yapılarını <b>, <i>, <u> etiketlerine dönüştürür
-    ve sadece izin verilen zengin metin etiketlerini koruyarak diğerlerini temizler.
+    HTML içerikleri biçimlendirme etiketleriyle birlikte döner (b, i, u, a, ul, ol, li).
+    <font> ve gereksiz <span> gibi yapılar da kaldırılır.
+    element.decode_contents() kullanılarak elementin dış kabuğu atılır.
     """
     if not element:
         return ""
-
-    # 1. Adım: Stil özellikli span'leri anlamsal etiketlere dönüştür
+    
+    # <span style="font-weight:bold"> gibi stilleri anlamsal etiketlere dönüştür
     for span in element.find_all("span"):
         style = span.get("style", "")
-        if "font-weight:700" in style or "font-weight:bold" in style:
+        if "font-weight:700" in style or "bold" in style:
             span.name = "b"
-            span.attrs = {} # style özelliğini temizle
+            span.attrs = {}
         elif "font-style:italic" in style:
             span.name = "i"
-            span.attrs = {} # style özelliğini temizle
+            span.attrs = {}
         elif "text-decoration:underline" in style:
             span.name = "u"
-            span.attrs = {} # style özelliğini temizle
+            span.attrs = {}
 
-    # 2. Adım: İzin verilen etiketler dışındaki her şeyi "unwrap" et (içeriğini koru, etiketi kaldır)
-    allowed_tags = ['b', 'strong', 'i', 'em', 'u', 'a', 'br', 'ul', 'ol', 'li']
-    
-    # find_all() ile tüm etiketleri bulup, izin listesinde olmayanları temizle
-    # Not: Elementin kendisini (root) değiştirmemek için `element.find_all()` kullanılır.
-    for tag in element.find_all(True): # True tüm tag'leri seçer
-        if tag.name not in allowed_tags:
-            tag.unwrap()
+    # <font> gibi gereksiz etiketleri kaldır ama içeriğini koru (unwrap)
+    for tag in element.find_all(['font']):
+        tag.unwrap()
 
-    # 3. Adım: Temizlenmiş HTML'in string temsilini döndür
-    return "".join(map(str, element.contents)).strip()
+    # Sadece içeriği döndür (element'in kendi dış kabuğunu değil)
+    return element.decode_contents().strip()
 
 
 def analyze_google_form(url: str):
@@ -116,8 +111,8 @@ def analyze_google_form(url: str):
                         q_text_element = item_container.select_one('.M7eMe') if item_container else None
                         q_desc_element = item_container.select_one('.OIC90c') if item_container else None
                         
-                        question['text'] = get_inner_html(q_text_element) if q_text_element else q_data[1]
-                        question['description'] = get_inner_html(q_desc_element) if q_desc_element else (q_data[2] if len(q_data) > 2 and q_data[2] else "")
+                        question['text'] = get_inner_html(q_text_element.clone()) if q_text_element else q_data[1]
+                        question['description'] = get_inner_html(q_desc_element.clone()) if q_desc_element else (q_data[2] if len(q_data) > 2 and q_data[2] else "")
                         
                         if item_container:
                             img_elem = item_container.select_one('.y6GzNb img')
@@ -501,4 +496,4 @@ def submit():
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=False)
+    app.run(host='0.0.0.0', port=port, debug=False)```
