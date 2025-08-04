@@ -88,13 +88,11 @@ def analyze_google_form(url: str):
                         question = {'image_url': None}
                         item_container = soup.find('div', {'data-item-id': str(item_id)})
                         
-                        # === ZENGİN METİN İYİLEŞTİRMESİ ===
-                        # JSON verisindeki düz metin yerine, doğrudan HTML'den zengin metni al.
-                        # Soru başlığı genellikle bu iki seçiciden birine uyar.
+                        # === ZENGİN METİN DESTEĞİ: HTML'den zengin metni çek ===
                         q_text_element = item_container.select_one('.M7eMe') if item_container else None
-                        # Soru açıklaması bu seçiciye uyar.
                         q_desc_element = item_container.select_one('.OIC90c') if item_container else None
 
+                        # Başlık ve açıklamayı HTML olarak kaydet
                         question['text'] = get_inner_html(q_text_element) if q_text_element else q_data[1]
                         question['description'] = get_inner_html(q_desc_element) if q_desc_element else (q_data[2] if len(q_data) > 2 and q_data[2] else "")
                         
@@ -115,7 +113,20 @@ def analyze_google_form(url: str):
                             question['type'] = 'Onay Kutusu Tablosu' if len(first_row) > 11 and first_row[11] and first_row[11][0] else 'Çoktan Seçmeli Tablo'
                             question['required'] = bool(first_row[2])
                             question['cols'] = [c[0] for c in first_row[1]]
-                            question['rows'] = [{'text': r[3][0], 'entry_id': f"entry.{r[0]}"} for r in rows_data]
+                            
+                            # Satır etiketlerini de zengin metin olarak çek
+                            row_labels = item_container.select('.ODSEBb') 
+                            question['rows'] = []
+                            for r_data in rows_data:
+                                r_id = r_data[0]
+                                r_text = r_data[3][0]
+                                
+                                # Satır etiketinin zengin metinini bulmaya çalış
+                                row_elem = next((elem for elem in row_labels if elem.parent.has_attr('data-id') and elem.parent['data-id'] == str(r_id)), None)
+                                row_html = get_inner_html(row_elem) if row_elem else r_text
+
+                                question['rows'].append({'text': row_html, 'entry_id': f"entry.{r_id}"})
+
                         else:
                             # Diğer Tüm Soru Tipleri
                             q_info = q_data[4][0]
@@ -133,10 +144,20 @@ def analyze_google_form(url: str):
                                         if len(opt) > 4 and opt[4]: question['has_other'] = True; continue
                                         if not opt[0] and opt[0] != "": continue
                                         opt_image_url = None
+                                        
+                                        # Seçenek etiketlerini zengin metin olarak çek
+                                        opt_text = opt[0]
                                         if i < len(option_html_elements):
                                             img_tag = option_html_elements[i].select_one('.LAANW img.QU5LQc')
                                             if img_tag and img_tag.has_attr('src'): opt_image_url = img_tag.get('src')
-                                        question['options'].append({'text': opt[0], 'image_url': opt_image_url})
+                                            
+                                            # Zengin metin etiketini bul
+                                            opt_label = option_html_elements[i].select_one('.Od2Twf')
+                                            if opt_label:
+                                                opt_text = get_inner_html(opt_label)
+                                        
+                                        question['options'].append({'text': opt_text, 'image_url': opt_image_url})
+
                                 question['type'] = 'Çoktan Seçmeli' if q_type == 2 else 'Onay Kutuları'
                             elif q_type == 3:
                                 question['type'] = 'Açılır Liste'
@@ -370,13 +391,23 @@ function validatePage(pageIndex) {
     const currentPage = pages[pageIndex];
     if (!currentPage) return false;
     const form = document.getElementById('clone-form');
-    // reportValidity sadece görünür olan ilk geçersiz eleman için raporlama yapar.
-    // Bu yüzden formun tamamında checkValidity() kullanmak daha güvenilir olabilir.
-    if (!form.checkValidity()) {
-        form.reportValidity();
-        return false;
+    // We validate the current visible page
+    const requiredInputs = currentPage.querySelectorAll('[required]');
+    let allValid = true;
+
+    for (const input of requiredInputs) {
+        if (!input.checkValidity()) { 
+            allValid = false; 
+            break; 
+        }
     }
-    return true;
+    
+    if (!allValid && typeof form.reportValidity === 'function') { 
+        // Trigger validation message display for the invalid input
+        form.reportValidity(); 
+    }
+    
+    return allValid;
 }
 
 function navigate(direction) {
@@ -390,97 +421,3 @@ function navigate(direction) {
 </script>
 </body></html>
 """
-
-@app.route('/', methods=['GET', 'POST'])
-def index():
-    if request.method == 'POST':
-        url = request.form.get('url', '').strip()
-        if not url or ("docs.google.com/forms" not in url and "forms.gle" not in url):
-            return render_template_string(HTML_TEMPLATE, error="Geçerli bir Google Form URL'si girin.")
-        form_data = analyze_google_form(url)
-        if "error" in form_data:
-            return render_template_string(HTML_TEMPLATE, error=form_data["error"])
-        session['form_structure'] = form_data
-        return render_template_string(HTML_TEMPLATE, form_data=form_data)
-    return render_template_string(HTML_TEMPLATE)
-
-@app.route('/submit', methods=['POST'])
-def submit():
-    form_structure = session.get('form_structure')
-    if not form_structure:
-        return "Hata: Form yapısı bulunamadı. Lütfen formu ana sayfadan tekrar oluşturun.", 400
-
-    user_answers = request.form
-    results = []
-    
-    all_questions = []
-    for page in form_structure.get('pages', []):
-        all_questions.extend(page)
-
-    for question in all_questions:
-        q_type = question.get('type')
-        if not q_type or q_type in ['Başlık', 'Media']:
-            continue
-
-        q_text_html = question.get('text') or ''
-        q_text_plain = BeautifulSoup(q_text_html, "html.parser").get_text(separator=" ", strip=True)
-        if not q_text_plain:
-            q_text_plain = f"[İsimsiz Soru - Tip: {q_type}]"
-
-        if 'Tablo' in q_type:
-            for row in question['rows']:
-                rid = row['entry_id']
-                row_label = f"{q_text_plain} [{row['text']}]"
-                if 'Onay' in q_type:
-                    answers = user_answers.getlist(rid)
-                    val = ', '.join(answers) if answers else "Boş Bırakıldı"
-                else:
-                    val = user_answers.get(rid, "Boş Bırakıldı")
-                results.append({"Soru": row_label, "Soru Tipi": q_type, "Cevap": val})
-            continue
-
-        entry = question.get('entry_id')
-        if not entry: continue
-        
-        answer_str = "Boş Bırakıldı"
-        if q_type == 'Onay Kutuları':
-            answers = user_answers.getlist(entry)
-            final = []
-            if "__other_option__" in answers:
-                answers.remove("__other_option__")
-                other_txt = user_answers.get(f"{entry}.other_option_response", "").strip()
-                final.append(f"Diğer: {other_txt}" if other_txt else "Diğer (belirtilmemiş)")
-            final.extend(answers)
-            if final: answer_str = ', '.join(final)
-        elif q_type == 'Çoktan Seçmeli':
-            ans = user_answers.get(entry)
-            if ans == "__other_option__":
-                other_txt = user_answers.get(f"{entry}.other_option_response", "").strip()
-                answer_str = f"Diğer: {other_txt}" if other_txt else "Diğer (belirtilmemiş)"
-            elif ans:
-                answer_str = ans
-        else:
-            raw_answer = user_answers.get(entry, "")
-            answer_str = raw_answer if raw_answer.strip() != "" else "Boş Bırakıldı"
-        
-        results.append({"Soru": q_text_plain, "Soru Tipi": q_type, "Cevap": answer_str})
-
-    df = pd.DataFrame(results)
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        sheet = 'Form Cevaplari'
-        df.to_excel(writer, index=False, sheet_name=sheet)
-        ws = writer.sheets[sheet]
-        for i, col in enumerate(df.columns):
-            col_width = max(df[col].astype(str).map(len).max(), len(col))
-            ws.column_dimensions[chr(65 + i)].width = min(col_width + 2, 70)
-    output.seek(0)
-    session.pop('form_structure', None)
-    return send_file(output,
-                     mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                     as_attachment=True,
-                     download_name='form_cevaplari.xlsx')
-
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=False)
