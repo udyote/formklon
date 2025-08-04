@@ -1,9 +1,17 @@
 # -*- coding: utf-8 -*-
 """
-Google Form Klonlayıcı + Debug Excel
-- Playwright ile JS sonrası DOM alır (bold/italic/link/altı çizili vs. yakalamak için).
-- Normal kullanıcı form klonlama + cevapları Excel indirme işlevi devam eder.
-- /debug?url=... ile formu parse edip soru bazlı formatlama bilgisi içeren ayrı Excel üretir.
+Google Form Klonlayıcı - Nihai Sürüm
+Production (Railway / Render / Heroku) uyumlu.
+- SECRET_KEY .env / ortam değişkeninden okunur
+- Gunicorn ile çalıştırılabilir
+- Google Form verisini çekip yeniden oluşturur ve cevapları Excel indirir
+- Zengin Metin Desteği: Başlık/Açıklama, kalın, italik, altı çizili, link ve listeleri tam olarak korur.
+- Medya Desteği: Sorulara ve seçeneklere eklenen görselleri destekler.
+- Doğru Bölümleme: Google Formlar'daki "Bölüm" mantığını çok sayfalı form olarak doğru şekilde uygular.
+- JS sonrası DOM alınması için Playwright ile render edilme (zengin formatlamayı almak için).
+- UX Düzeltmeleri: "Diğer" seçeneği ve radyo düğmesi seçimini kaldırma gibi JS iyileştirmeleri içerir.
+- Kısa Link Desteği: 'forms.gle' linklerini otomatik olarak çözer.
+- Excel'e ek olarak Soru HTML ve Cevap HTML sütunları eklenir.
 """
 
 import os
@@ -13,9 +21,9 @@ import traceback
 import requests
 import pandas as pd
 from bs4 import BeautifulSoup
-from flask import Flask, request, render_template_string, send_file, session, redirect, url_for
+from flask import Flask, request, render_template_string, send_file, session
 
-# Playwright import, fallback olacak şekilde
+# Playwright import (fallback varsa uyarır ama çalışmaya devam eder)
 try:
     from playwright.sync_api import sync_playwright, TimeoutError as PWTimeoutError
     PLAYWRIGHT_AVAILABLE = True
@@ -25,11 +33,16 @@ except ImportError:
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-fallback-key")
 
-USER_AGENT = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
-              '(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36')
+USER_AGENT = (
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+    '(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+)
 
 
 def fetch_rendered_html(url: str) -> str:
+    """
+    Playwright ile JS sonrası DOM'u alır. Hata olursa exception fırlatır.
+    """
     if not PLAYWRIGHT_AVAILABLE:
         raise RuntimeError("Playwright yüklü değil.")
     try:
@@ -37,7 +50,7 @@ def fetch_rendered_html(url: str) -> str:
             browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
             page = browser.new_page(user_agent=USER_AGENT)
             page.goto(url, wait_until="networkidle", timeout=20000)
-            # Dinamik içerik için kısa ek bekleme
+            # Dinamik içeriklerin gelmesi için ek bekleme
             try:
                 page.wait_for_selector('.M7eMe, .cBGGJ a', timeout=12000)
             except PWTimeoutError:
@@ -53,8 +66,12 @@ def fetch_rendered_html(url: str) -> str:
 
 
 def get_inner_html(element):
+    """
+    Semantik dönüşümlerle birlikte iç HTML'i alır. (b, i, u, a vs. korunur)
+    """
     if not element:
         return ""
+
     for span in element.find_all("span"):
         style = span.get("style", "").lower()
         if "font-weight:700" in style or "bold" in style:
@@ -66,8 +83,10 @@ def get_inner_html(element):
         if "text-decoration:underline" in style:
             span.name = "u"
             span.attrs = {}
-    for tag in element.find_all(['font']):
+
+    for tag in element.find_all(["font"]):
         tag.unwrap()
+
     return element.decode_contents().strip()
 
 
@@ -80,7 +99,7 @@ def analyze_google_form(url: str):
             try:
                 html_text = fetch_rendered_html(url)
             except Exception:
-                html_text = None
+                html_text = None  # fallback'a düşecek
 
         if not html_text:
             try:
@@ -95,15 +114,8 @@ def analyze_google_form(url: str):
                 return {"error": f"URL okunamadı. Geçerli bir Google Form linki girin. Hata: {e}"}
 
         soup = BeautifulSoup(html_text, 'html.parser')
-
-        # debug olarak alınan ham HTML'i kaydet (Railway'de log'a düşer veya dosya oluşturursan kontrol et)
-        try:
-            with open("/tmp/debug_full_rendered_form.html", "w", encoding="utf-8") as f:
-                f.write(soup.prettify())
-        except Exception:
-            pass  # İzin yoksa geç
-
         form_data = {"pages": []}
+
         title_div = soup.find('div', class_='F9yp7e')
         form_data['title'] = get_inner_html(title_div) if title_div else "İsimsiz Form"
         desc_div = soup.find('div', class_='cBGGJ')
@@ -115,6 +127,7 @@ def analyze_google_form(url: str):
                     raw = script.string.replace('var FB_PUBLIC_LOAD_DATA_ = ', '').rstrip(';')
                     data = json.loads(raw)
                     question_list = data[1][1]
+
                     current_page = []
 
                     email_div = soup.find('div', {'jsname': 'Y0xS1b'})
@@ -231,6 +244,7 @@ def analyze_google_form(url: str):
 
                     if current_page:
                         form_data['pages'].append(current_page)
+
                     if not form_data['pages'] and current_page:
                         form_data['pages'].append(current_page)
 
@@ -315,7 +329,7 @@ input[type=radio],input[type=checkbox]{flex-shrink:0;margin-top:0.3rem;width:1.1
 .error-message{background:#f8d7da;color:#58151c;border: 1px solid #f1aeb5;padding:1rem;border-radius:6px;text-align:center}
 .grid-table{width:100%;border-collapse:collapse;margin-top:.5rem}
 .grid-table th,.grid-table td{border:1px solid var(--bs-border-color);padding:.6rem;text-align:center;font-size:.9rem}
-.grid-table th{background:#f8f9fa}
+.grid-table th{background:#f8f9fa'}
 .grid-table td:first-child{text-align:left;font-weight:600}
 .rating-group{display:flex;flex-direction:row-reverse;justify-content:center;gap:5px}
 .rating-group input{display:none} .rating-group label{font-size:2rem;color:#ccc;cursor:pointer}
@@ -359,6 +373,7 @@ input[type=radio],input[type=checkbox]{flex-shrink:0;margin-top:0.3rem;width:1.1
             <div class="question-label">{{ q.text | safe }} {% if q.required %}<span class="required-star">*</span>{% endif %}</div>
             {% if q.description %}<div class="question-description">{{ q.description | safe }}</div>{% endif %}
             {% if q.image_url %}<div class="form-image-container"><img src="{{ q.image_url }}" alt="Soru Görseli"></div>{% endif %}
+
             {% if q.type == 'E-posta' %} <input type="email" name="{{ q.entry_id }}" required>
             {% elif q.type == 'Kısa Yanıt' %} <input type="text" name="{{ q.entry_id }}" {% if q.required %}required{% endif %}>
             {% elif q.type == 'Paragraf' %} <textarea name="{{ q.entry_id }}" {% if q.required %}required{% endif %}></textarea>
@@ -460,19 +475,6 @@ function navigate(direction) {
 """
 
 
-def extract_format_flags(html_fragment: str):
-    """HTML içinde bold/italic/underline/link olup olmadığını, ve link href'lerini çıkar."""
-    soup = BeautifulSoup(html_fragment or "", "html.parser")
-    flags = {
-        "has_bold": bool(soup.find('b')),
-        "has_italic": bool(soup.find('i')),
-        "has_underline": bool(soup.find('u')),
-        "has_link": bool(soup.find('a')),
-        "link_hrefs": ", ".join([a.get('href', '') for a in soup.find_all('a') if a.get('href')]) if soup.find_all('a') else ""
-    }
-    return flags
-
-
 @app.route('/', methods=['GET', 'POST'])
 def index():
     if request.method == 'POST':
@@ -484,7 +486,6 @@ def index():
             return render_template_string(HTML_TEMPLATE, error=form_data["error"])
         session['form_structure'] = form_data
         return render_template_string(HTML_TEMPLATE, form_data=form_data)
-    # Eğer ?url=... ve debug paramı yoksa kullanıcıyı form arayüzüne yönlendir
     return render_template_string(HTML_TEMPLATE)
 
 
@@ -514,42 +515,95 @@ def submit():
         if 'Tablo' in q_type:
             for row in question['rows']:
                 rid = row['entry_id']
-                row_label = f"{q_text_plain} [{row['text']}]"
+                row_label_plain = f"{q_text_plain} [{row['text']}]"
+                row_label_html = f"{q_text_html} <span>[{row['text']}]</span>"
+
                 if 'Onay' in q_type:
                     answers = user_answers.getlist(rid)
-                    val = ', '.join(answers) if answers else "Boş Bırakıldı"
+                    val_plain = ', '.join(answers) if answers else "Boş Bırakıldı"
+                    # HTML cevap: her seçeneği span ile ayır, diğer varsa
+                    if answers:
+                        html_parts = []
+                        if "__other_option__" in answers:
+                            answers.remove("__other_option__")
+                            other_txt = user_answers.get(f"{rid}.other_option_response", "").strip()
+                            if other_txt:
+                                html_parts.append(f'<span class="other">Diğer: {other_txt}</span>')
+                            else:
+                                html_parts.append(f'<span class="other">Diğer (belirtilmemiş)</span>')
+                        for a in answers:
+                            html_parts.append(f'<span>{a}</span>')
+                        val_html = ', '.join(html_parts)
+                    else:
+                        val_html = "<i>Boş Bırakıldı</i>"
                 else:
-                    val = user_answers.get(rid, "Boş Bırakıldı")
-                results.append({"Soru": row_label, "Soru Tipi": q_type, "Cevap": val})
+                    val_plain = user_answers.get(rid, "Boş Bırakıldı")
+                    val_html = val_plain if val_plain.strip() else "<i>Boş Bırakıldı</i>"
+
+                results.append({
+                    "Soru": row_label_plain,
+                    "Soru Tipi": q_type,
+                    "Cevap": val_plain,
+                    "Soru HTML": row_label_html,
+                    "Cevap HTML": val_html
+                })
             continue
 
         entry = question.get('entry_id')
         if not entry:
             continue
 
-        answer_str = "Boş Bırakıldı"
+        answer_str_plain = "Boş Bırakıldı"
+        answer_str_html = "<i>Boş Bırakıldı</i>"
+
         if q_type == 'Onay Kutuları':
             answers = user_answers.getlist(entry)
             final = []
+            html_parts = []
             if "__other_option__" in answers:
                 answers.remove("__other_option__")
                 other_txt = user_answers.get(f"{entry}.other_option_response", "").strip()
-                final.append(f"Diğer: {other_txt}" if other_txt else "Diğer (belirtilmemiş)")
-            final.extend(answers)
+                if other_txt:
+                    final.append(f"Diğer: {other_txt}")
+                    html_parts.append(f'<span class="other">Diğer: {other_txt}</span>')
+                else:
+                    final.append("Diğer (belirtilmemiş)")
+                    html_parts.append(f'<span class="other">Diğer (belirtilmemiş)</span>')
+            for a in answers:
+                final.append(a)
+                html_parts.append(f"<span>{a}</span>")
             if final:
-                answer_str = ', '.join(final)
+                answer_str_plain = ', '.join(final)
+                answer_str_html = ', '.join(html_parts)
         elif q_type == 'Çoktan Seçmeli':
             ans = user_answers.get(entry)
             if ans == "__other_option__":
                 other_txt = user_answers.get(f"{entry}.other_option_response", "").strip()
-                answer_str = f"Diğer: {other_txt}" if other_txt else "Diğer (belirtilmemiş)"
+                if other_txt:
+                    answer_str_plain = f"Diğer: {other_txt}"
+                    answer_str_html = f'<span class="other">Diğer: {other_txt}</span>'
+                else:
+                    answer_str_plain = "Diğer (belirtilmemiş)"
+                    answer_str_html = '<span class="other">Diğer (belirtilmemiş)</span>'
             elif ans:
-                answer_str = ans
+                answer_str_plain = ans
+                answer_str_html = f"<span>{ans}</span>"
         else:
             raw_answer = user_answers.get(entry, "")
-            answer_str = raw_answer if raw_answer.strip() != "" else "Boş Bırakıldı"
+            if raw_answer.strip() != "":
+                answer_str_plain = raw_answer
+                answer_str_html = f"<span>{raw_answer}</span>"
+            else:
+                answer_str_plain = "Boş Bırakıldı"
+                answer_str_html = "<i>Boş Bırakıldı</i>"
 
-        results.append({"Soru": q_text_plain, "Soru Tipi": q_type, "Cevap": answer_str})
+        results.append({
+            "Soru": q_text_plain,
+            "Soru Tipi": q_type,
+            "Cevap": answer_str_plain,
+            "Soru HTML": q_text_html,
+            "Cevap HTML": answer_str_html
+        })
 
     df = pd.DataFrame(results)
     output = io.BytesIO()
@@ -562,83 +616,12 @@ def submit():
             ws.column_dimensions[chr(65 + i)].width = min(col_width + 2, 70)
     output.seek(0)
     session.pop('form_structure', None)
-    return send_file(output,
-                     mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                     as_attachment=True,
-                     download_name='form_cevaplari.xlsx')
-
-
-@app.route('/debug', methods=['GET'])
-def debug_excel():
-    url = request.args.get('url', '').strip()
-    if not url or ("docs.google.com/forms" not in url and "forms.gle" not in url):
-        return "Geçerli bir Google Form URL'si parametre olarak ver. Örn: /debug?url=...", 400
-
-    form_data = analyze_google_form(url)
-    if "error" in form_data:
-        return form_data["error"], 400
-
-    rows = []
-    for page_idx, page in enumerate(form_data.get('pages', [])):
-        for q_idx, q in enumerate(page):
-            if not q.get('type'):
-                continue
-            if q['type'] in ['Başlık', 'Media']:
-                # Yine de gözükmesini istiyorsan ekle
-                rows.append({
-                    "Sayfa": page_idx + 1,
-                    "Soru Numarası": q_idx + 1,
-                    "Tip": q['type'],
-                    "Raw HTML Text": q.get('text', ''),
-                    "Raw HTML Description": q.get('description', ''),
-                    "Plain Text Text": BeautifulSoup(q.get('text', ''), "html.parser").get_text(separator=" ", strip=True),
-                    "Plain Text Description": BeautifulSoup(q.get('description', ''), "html.parser").get_text(separator=" ", strip=True),
-                    **{f"Text_{k}": v for k, v in extract_format_flags(q.get('text', '')).items()},
-                    **{f"Description_{k}": v for k, v in extract_format_flags(q.get('description', '')).items()},
-                })
-                continue
-
-            base = {
-                "Sayfa": page_idx + 1,
-                "Soru Numarası": q_idx + 1,
-                "Tip": q['type'],
-                "Raw HTML Text": q.get('text', ''),
-                "Raw HTML Description": q.get('description', ''),
-                "Plain Text Text": BeautifulSoup(q.get('text', ''), "html.parser").get_text(separator=" ", strip=True),
-                "Plain Text Description": BeautifulSoup(q.get('description', ''), "html.parser").get_text(separator=" ", strip=True),
-            }
-            text_flags = extract_format_flags(q.get('text', ''))
-            desc_flags = extract_format_flags(q.get('description', ''))
-            base.update({
-                "Text_has_bold": text_flags["has_bold"],
-                "Text_has_italic": text_flags["has_italic"],
-                "Text_has_underline": text_flags["has_underline"],
-                "Text_has_link": text_flags["has_link"],
-                "Text_link_hrefs": text_flags["link_hrefs"],
-                "Description_has_bold": desc_flags["has_bold"],
-                "Description_has_italic": desc_flags["has_italic"],
-                "Description_has_underline": desc_flags["has_underline"],
-                "Description_has_link": desc_flags["has_link"],
-                "Description_link_hrefs": desc_flags["link_hrefs"],
-            })
-            rows.append(base)
-
-    df = pd.DataFrame(rows)
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df.to_excel(writer, index=False, sheet_name="Debug Formatlama")
-        ws = writer.sheets["Debug Formatlama"]
-        for i, col in enumerate(df.columns):
-            col_width = max(df[col].astype(str).map(len).max(), len(col))
-            try:
-                ws.column_dimensions[chr(65 + i)].width = min(col_width + 2, 70)
-            except Exception:
-                pass
-    output.seek(0)
-    return send_file(output,
-                     mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                     as_attachment=True,
-                     download_name='debug_form_formatlama.xlsx')
+    return send_file(
+        output,
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        as_attachment=True,
+        download_name='form_cevaplari.xlsx'
+    )
 
 
 if __name__ == '__main__':
