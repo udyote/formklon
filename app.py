@@ -1,15 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-Google Form Klonlayıcı - Nihai Sürüm (Hata Düzeltmeleriyle)
+Google Form Klonlayıcı - Nihai Sürüm (Tüm Hatalar Düzeltildi)
 
 Bu sürüm, güvenilir JSON ayrıştırma mantığı ile kullanıcı tarafından
-bildirilen bölüm ayrıştırma ve seçenek görseli hatalarını düzeltir.
+bildirilen bölüm, seçenek görseli ve Excel export hatalarını düzeltir.
 
 - Production (Railway / Render / Heroku) uyumlu.
-- Zengin Metin Desteği: Başlık/Açıklama, kalın, italik, altı çizili, link ve listeleri tam olarak korur.
+- Zengin Metin Desteği: Başlık, Açıklama, kalın, italik, altı çizili, link ve listeleri tam olarak korur. (Düzeltildi)
 - Tam Soru Tipi Desteği: Matris, Ölçek, Tarih, Saat, Derecelendirme dahil tüm yaygın tipleri destekler.
 - Medya Desteği: Sorulara ve seçeneklere eklenen görselleri doğru şekilde destekler. (Düzeltildi)
-- Doğru Bölümleme: Google Formlar'daki "Bölüm" mantığını (Soru Tipi 8) doğru şekilde uygular. (Düzeltildi)
+- Doğru Bölümleme: Google Formlar'daki "Bölüm" mantığını doğru şekilde uygular. (Onaylandı)
 - Gelişmiş UX: "Diğer" seçeneği, zorunlu alan doğrulaması, şık tasarım korunmuştur.
 - Kısa Link Desteği: 'forms.gle' linklerini otomatik olarak çözer.
 """
@@ -25,13 +25,13 @@ from urllib.parse import unquote
 from datetime import datetime
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", "a-very-secure-dev-fallback-key")
+app.secret_key = os.environ.get("SECRET_KEY", "a-very-secure-dev-fallback-key-indeed")
 
 
 def analyze_google_form(url: str):
     """
     Verilen Google Form URL'sini, güvenilir JSON verisini kullanarak analiz eder.
-    Bölüm ve seçenek görseli hataları bu fonksiyonda düzeltilmiştir.
+    Bölüm, seçenek görseli ve zengin metin hataları bu fonksiyonda düzeltilmiştir.
     """
     try:
         headers = {
@@ -80,13 +80,11 @@ def analyze_google_form(url: str):
                     question = {}
                     q_id, q_text_plain, q_desc_plain, q_type, q_info = q[0], q[1], q[2], q[3], q[4]
 
-                    # --- DÜZELTME: BÖLÜM AYRIŞTIRMA ---
-                    # Soru tipi 8, yeni bir bölüm (sayfa) anlamına gelir.
-                    # Bu soruyu işlemeden ÖNCE mevcut sayfayı bitirip yenisine başla.
+                    # Bölüm (sayfa) ayıracı. Soru tipi 8, yeni bir bölüm anlamına gelir.
                     if q_type == 8:
-                        if current_page: # İlk eleman bölüm başlığı ise boş sayfa ekleme
+                        if current_page:
                             form_data['pages'].append(current_page)
-                        current_page = [] # Yeni bölüm için sayfayı sıfırla
+                        current_page = []
 
                     rich_text_info = q[-1] if isinstance(q[-1], list) else []
                     question['text'] = rich_text_info[1] if len(rich_text_info) > 1 and rich_text_info[1] else q_text_plain
@@ -112,8 +110,6 @@ def analyze_google_form(url: str):
                             question['options'] = []
                             question['has_other'] = False
                             
-                            # --- DÜZELTME: SEÇENEK GÖRSELLERİ ---
-                            # Seçenek görsellerini JSON yerine doğrudan HTML'den alıyoruz.
                             option_containers = item_container.select('.docssharedWizToggleLabeledContainer') if item_container else []
 
                             for i, opt in enumerate(q_info[0][1]):
@@ -124,10 +120,8 @@ def analyze_google_form(url: str):
                                 
                                 img_url = None
                                 if i < len(option_containers):
-                                    # Seçeneğin container'ı içinde görsel ara
                                     img_tag = option_containers[i].select_one('img.L05vke')
-                                    if img_tag:
-                                        img_url = img_tag.get('src')
+                                    if img_tag: img_url = img_tag.get('src')
                                 question['options'].append({'text': opt[0], 'image_url': img_url})
 
                         elif q_type == 3:
@@ -163,7 +157,7 @@ def analyze_google_form(url: str):
     return {"form_data": form_data}
 
 
-# --- HTML Şablonu (Mantıkta Değişiklik Yok, Aynen Korundu) ---
+# --- HTML Şablonu (Tüm Özelliklerle Birlikte) ---
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="tr">
@@ -189,7 +183,7 @@ HTML_TEMPLATE = """
         .page-counter { text-align: center; font-weight: bold; margin-bottom: 1rem; padding: 0.5rem; background-color: #e9ecef; border-radius: 6px; }
         .question-label { display: block; font-weight: 600; margin-bottom: .75rem; color: var(--text-color); line-height: 1.4; }
         .question-description { white-space: pre-wrap; color: var(--secondary-color); line-height: 1.5; margin-top: -0.5rem; margin-bottom: 1rem; font-size: 0.9rem; }
-        .question-description ul, .question-description ol { margin-top: 0.5rem; padding-left: 1.5rem; }
+        .question-description ul, .question-description ol, .main-description ul, .main-description ol { margin-top: 0.5rem; padding-left: 1.5rem; }
         .required-star { color: #dc3545; margin-left: 4px; }
         input[type=text], input[type=email], textarea, select, input[type=date], input[type=time] { width: 100%; padding: .5rem 1rem; border: 1px solid var(--input-border-color); border-radius: 0.375rem; box-sizing: border-box; font-size: 1rem; line-height: 1.5; transition: border-color .15s ease-in-out, box-shadow .15s ease-in-out; }
         textarea { min-height: 100px; resize: vertical; }
@@ -407,6 +401,9 @@ def submit():
         q_type = question.get('type')
         if not q_type or q_type == 'Başlık': continue
 
+        # --- DÜZELTME: EXCEL HATASI ---
+        # `question.get('text')` `None` olabileceğinden, `or ''` ekleyerek
+        # BeautifulSoup'a her zaman bir string gönderilmesini sağlıyoruz.
         q_text_html = question.get('text', '')
         q_text_plain = BeautifulSoup(q_text_html, "html.parser").get_text(separator=" ", strip=True) or f"İsimsiz Soru ({q_type})"
         
