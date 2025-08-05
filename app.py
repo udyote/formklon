@@ -1,16 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-Google Form Klonlayıcı - Özel Stiller İçin Yapısal Klonlama
+Google Form Klonlayıcı - Özel Stiller İçin Yapısal Klonlama (Sade Stil)
 
-Bu sürüm, Google Form'un görsel kimliğini DEĞİL, yapısal ve anlamsal
-içeriğini klonlamak için tasarlanmıştır.
-
-- Google'ın CSS dosyaları KASTEN ALINMAZ. Bu sayede kendi özel stil dosyanızı
-  (font, renk, çerçeve vb.) kullanarak formu özgürce şekillendirebilirsiniz.
-- Google Form'daki zengin metin (kalın, italik, altı çizili, link, madde imli/numaralı listeler)
+Bu sürüm, Google Form'un yapısal ve anlamsal içeriğini klonlar.
+- Google'ın CSS dosyaları KASTEN ALINMAZ. Bu, formun sizin tarafınızdan
+  sağlanan sade stil ile gösterilmesini sağlar.
+- Google Form'daki zengin metin (kalın, italik, link, listeler)
   doğru HTML etiketlerine (<b>, <a>, <ul> vb.) dönüştürülür.
-- Klonlanan form, bu anlamsal HTML'i içerir ve sizin CSS'inizle stilize edilmeye hazırdır.
-- Önceki sürümdeki ham veri gösterme hatası düzeltilmiştir.
+- Bu anlamsal etiketler, özel renkler almadan sayfanın temel stilini miras alır.
 """
 
 import os
@@ -31,7 +28,7 @@ app.secret_key = os.environ.get("SECRET_KEY", "your-super-secret-key-for-dev")
 def analyze_google_form(url: str):
     """
     Verilen Google Form URL'sini analiz eder ve yapısal verilerini çıkarır.
-    Bu fonksiyon artık stil bilgilerini (head_html) ÇEKMEZ.
+    Bu fonksiyon stil bilgilerini (head_html) ÇEKMEZ.
     """
     try:
         headers = {
@@ -52,7 +49,6 @@ def analyze_google_form(url: str):
 
     soup = BeautifulSoup(resp.text, 'html.parser')
     
-    # --- Form Yapısını (JSON Verisi) Çek ---
     form_data = {'pages': []}
     for script in soup.find_all('script'):
         if script.string and 'FB_PUBLIC_LOAD_DATA_' in script.string:
@@ -62,14 +58,9 @@ def analyze_google_form(url: str):
 
                 form_info = data[1]
                 
-                # --- HATA DÜZELTMESİ ---
-                # Form başlığı ve açıklaması doğru indekslerden okunuyor.
-                # Önceki kodda açıklama yerine tüm soru listesi atanıyordu.
                 form_data['title'] = form_info[8] if len(form_info) > 8 and form_info[8] else (form_info[0] or 'İsimsiz Form')
-                # Google formda açıklama alanı 7. indexte yer alır.
                 form_data['description'] = form_info[7] if len(form_info) > 7 and isinstance(form_info[7], str) else ''
                 
-                # Soruların bulunduğu liste
                 question_list = form_info[1]
 
                 current_page = []
@@ -86,11 +77,8 @@ def analyze_google_form(url: str):
                     question = {}
                     q_id, q_text_plain, q_desc_plain, q_type, q_info = q[0], q[1], q[2], q[3], q[4]
 
-                    # Zengin metin içeren başlık ve açıklamayı al.
                     rich_text_info = q[-1] if isinstance(q[-1], list) else []
                     question['text'] = rich_text_info[1] if len(rich_text_info) > 1 and rich_text_info[1] else q_text_plain
-                    # Zengin metin açıklama, Google'da düz metin açıklamasından farklı bir yerde olabilir.
-                    # İkisini de kontrol ediyoruz.
                     rich_desc = rich_text_info[2] if len(rich_text_info) > 2 and rich_text_info[2] else None
                     question['description'] = rich_desc or q_desc_plain or ''
 
@@ -129,7 +117,7 @@ def analyze_google_form(url: str):
                     elif q_type == 3:
                         question['type'] = 'Açılır Liste'
                         question['options'] = [opt[0] for opt in q_info[0][1] if opt and opt[0]]
-                    else: # Diğer tipler şimdilik atlanıyor
+                    else:
                         continue
                         
                     current_page.append(question)
@@ -149,97 +137,83 @@ def analyze_google_form(url: str):
     if not form_data['pages'] or not any(form_data['pages']):
         return {"error": "Formda analiz edilecek soru bulunamadı veya form yapısı okunamadı."}
 
-    # Fonksiyon artık sadece form_data döndürüyor.
     return {"form_data": form_data}
 
 
-# --- HTML Şablonu (Kendi Stillerinizle) ---
+# --- HTML Şablonu (Sizin Belirttiğiniz Sade Stillerle Güncellendi) ---
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="tr">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Özel Stilli Form Klonu</title>
+    <title>Form Klonu</title>
     <!-- 
-      BURASI SİZİN STİL ALANINIZ.
-      Google'ın CSS'i artık burada değil. Bu sayede aşağıdaki stiller ve
-      kendi ekleyeceğiniz stiller tam olarak çalışacaktır.
+      Stil Bloğu, istediğiniz sade tasarıma göre güncellendi.
+      Anlamsal etiketlere (b, i, a) özel renkler atanmadı.
     -->
     <style>
-        /* Genel Sayfa Stilleri - Kendi stilinizi buraya yazın */
-        @import url('https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700&display=swap');
-        
-        body { 
-            font-family: 'Nunito', sans-serif; 
-            background-color: #f0f2f5; 
-            color: #333; 
-            margin: 0; 
-            padding: 1.5rem; 
-        }
-        .main-container { 
-            max-width: 750px; 
-            margin: 0 auto; 
-            background-color: #ffffff; 
-            padding: 2.5rem; 
-            border-radius: 12px; 
-            box-shadow: 0 6px 20px rgba(0,0,0,0.08);
-            border-top: 5px solid #6c5ce7;
-        }
-        
-        /* Semantik HTML Etiketlerini Stilize Etme (Amacınızı kanıtlamak için) */
-        b, strong {
-            /* Google'dan gelen kalın bilgisi bu stile göre renklenecek */
-            color: #6c5ce7; 
-            font-weight: 700;
-        }
-        i, em {
-            /* Google'dan gelen italik bilgisi bu stile göre renklenecek */
-            color: #0984e3;
-        }
-        u {
-           /* Altı çizili metinler için özel stil */
-           text-decoration-color: #fd79a8;
-           text-decoration-thickness: 2px;
-        }
-        a {
-            /* Linkler için kendi stiliniz */
-            color: #d63031;
-            font-weight: 600;
-            text-decoration: none;
-        }
-        a:hover {
-            text-decoration: underline;
-        }
-        ul, ol {
-            /* Listeler için özel stil */
-            background-color: #fafafa;
-            border-left: 3px solid #6c5ce7;
-            padding: 1rem 1rem 1rem 2.5rem; /* Sol padding artırıldı */
-            margin: 1rem 0;
-            border-radius: 0 8px 8px 0;
-        }
+      body {
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+        background: #f8f9fa;
+        padding: 2rem;
+      }
+      .container {
+        max-width: 760px;
+        margin: 0 auto;
+        background: #fff;
+        padding: 2rem;
+        border-radius: 8px;
+      }
+      .btn {
+        background: #198754;
+        color: #fff;
+        padding: .75rem 1.5rem;
+        border: none;
+        border-radius: .375rem;
+        cursor: pointer;
+        font-size: 1rem; /* Okunabilirlik için eklendi */
+      }
+      .required-star {
+        color: #dc3545;
+      }
 
-        /* Form Elemanları Stilleri */
-        .form-title { font-size: 2.2rem; font-weight: 700; color: #333; border-bottom: 2px solid #eee; padding-bottom: 1rem; margin-bottom: 1rem; }
-        .form-description { font-size: 1rem; color: #555; margin-bottom: 2.5rem; line-height: 1.6; }
-        .question-block { margin-bottom: 2rem; padding: 1.5rem; border: 1px solid #e0e0e0; border-radius: 8px; transition: box-shadow 0.2s; }
-        .question-block:focus-within { border-color: #6c5ce7; box-shadow: 0 0 0 3px rgba(108, 92, 231, 0.2); }
-        .question-text { font-weight: 600; font-size: 1.1rem; margin-bottom: 0.5rem; }
-        .required-star { color: #d63031; font-size: 1.2rem; }
-        input[type="text"], input[type="email"], textarea, select { width: 100%; padding: 0.8rem; border: 1px solid #ccc; border-radius: 6px; box-sizing: border-box; font-family: 'Nunito', sans-serif; transition: border-color 0.2s; }
-        input[type="text"]:focus, input[type="email"]:focus, textarea:focus, select:focus { border-color: #6c5ce7; outline: none; }
-        .btn { display: inline-block; font-weight: 600; color: #fff; background-image: linear-gradient(to right, #6c5ce7, #a29bfe); border: none; padding: 0.9rem 1.8rem; font-size: 1rem; border-radius: 6px; cursor: pointer; text-align: center; text-decoration: none; margin-top: 1rem; transition: transform 0.2s; }
-        .btn:hover { transform: translateY(-2px); }
-        .error-message { margin-top: 1rem; color: #d63031; background-color: #ffdddd; border: 1px solid #d63031; padding: 1rem; border-radius: 4px; }
+      /* Form elemanları için eklenmiş temel stiller */
+      .question-block {
+        margin-bottom: 1.5rem;
+      }
+      .question-text {
+        font-weight: 600;
+        margin-bottom: 0.5rem;
+        display: block; /* Label'ın tam satırı kaplaması için */
+      }
+      .question-description {
+          color: #6c757d;
+          font-size: 0.9rem;
+          margin-bottom: 0.75rem;
+      }
+      input[type="text"], input[type="email"], textarea, select {
+        width: 100%;
+        padding: .5rem;
+        border: 1px solid #ccc;
+        border-radius: 4px;
+        box-sizing: border-box; /* Padding'in genişliği etkilememesi için */
+      }
+      textarea {
+        min-height: 100px;
+      }
+      .error-message {
+        margin-top: 1rem;
+        color: red;
+      }
     </style>
 </head>
 <body>
-  <div class="main-container">
+  <div class="container">
     <h1>Google Form Klonlayıcı</h1>
     <form method="post" action="/">
-      <input type="text" name="url" placeholder="Klonlamak istediğiniz Google Form URL'sini yapıştırın" required>
-      <button class="btn" style="background-image: linear-gradient(to right, #0984e3, #74b9ff);">Formu Oluştur</button>
+      <input type="text" name="url" placeholder="Google Form URL'si girin" required>
+      <button class="btn" style="margin-top:1rem;">Formu Oluştur</button>
     </form>
 
     {% if error %}
@@ -247,17 +221,17 @@ HTML_TEMPLATE = """
     {% endif %}
 
     {% if form_data %}
-      <hr style="margin: 2rem 0; border: 0; border-top: 1px solid #eee;">
-      <div class="form-title">{{ form_data.title | safe }}</div>
+      <hr style="margin: 2rem 0;">
+      <h2 style="margin-top:2rem;">{{ form_data.title | safe }}</h2>
       {% if form_data.description %}
-        <div class="form-description">{{ form_data.description | safe }}</div>
+        <div style="margin-bottom:1.5rem;">{{ form_data.description | safe }}</div>
       {% endif %}
       
       <form method="post" action="/submit" enctype="multipart/form-data">
         {% for page in form_data.pages %}
             {% for q in page %}
                 <div class="question-block">
-                  <div class="question-text">{{ q.text | safe }} {% if q.required %}<span class="required-star">*</span>{% endif %}</div>
+                  <label class="question-text">{{ q.text | safe }} {% if q.required %}<span class="required-star">*</span>{% endif %}</label>
                   {% if q.description %}<div class="question-description">{{ q.description | safe }}</div>{% endif %}
                   {% if q.image_url %}<img src="{{ q.image_url }}" style="max-width:100%; border-radius:8px; margin-top:1rem;">{% endif %}
 
@@ -283,27 +257,23 @@ HTML_TEMPLATE = """
 </html>
 """
 
-# --- Flask Rotaları ---
+# --- Flask Rotaları (Mantık Değişikliği Yok) ---
 
 @app.route('/', methods=['GET', 'POST'])
 def index():
     if request.method == 'POST':
         url = request.form.get('url', '').strip()
         if not url or ('docs.google.com/forms' not in url and 'forms.gle' not in url):
-            # head_html artık gönderilmiyor.
             return render_template_string(HTML_TEMPLATE, error='Lütfen geçerli bir Google Form URL\'si girin.', form_data=None)
         
         result = analyze_google_form(url)
         if 'error' in result:
-             # head_html artık gönderilmiyor.
             return render_template_string(HTML_TEMPLATE, error=result['error'], form_data=None)
         
         session['form_structure'] = result['form_data']
         
-         # head_html artık gönderilmiyor.
         return render_template_string(HTML_TEMPLATE, error=None, form_data=result['form_data'])
     
-    # head_html artık gönderilmiyor.
     return render_template_string(HTML_TEMPLATE, error=None, form_data=None)
 
 
