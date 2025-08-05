@@ -80,18 +80,18 @@ def analyze_google_form(url: str):
                     question = {}
                     q_id, q_text_plain, q_desc_plain, q_type, q_info = q[0], q[1], q[2], q[3], q[4]
 
-                    # Bölüm (sayfa) ayıracı. Soru tipi 8, yeni bir bölüm anlamına gelir.
                     if q_type == 8:
                         if current_page:
                             form_data['pages'].append(current_page)
                         current_page = []
 
                     # DÜZELTME: ZENGİN METİN VE LİNKLER
-                    # Zengin metin (link, kalın vb. içeren) bilgisini öncelikli olarak al.
                     rich_text_info = q[-1] if isinstance(q[-1], list) else []
-                    question['text'] = (rich_text_info[1] if len(rich_text_info) > 1 and rich_text_info[1] else q_text_plain) or ''
-                    rich_desc = rich_text_info[2] if len(rich_text_info) > 2 and rich_text_info[2] else None
+                    question['text'] = (rich_text_info[1] if len(rich_text_info) > 1 and rich_text_info[1] and 'href' in rich_text_info[1]
+                                        else (q[-2][1] if len(q) > 11 and isinstance(q[-2], list) and len(q[-2]) > 1 and q[-2][1] else q_text_plain)) or ''
+                    rich_desc = rich_text_info[1] if len(rich_text_info) > 1 and rich_text_info[1] and 'href' not in question['text'] else None
                     question['description'] = rich_desc or q_desc_plain or ''
+
 
                     question['image_url'] = q[5][0] if len(q) > 5 and q[5] and q[5][0] else None
                     
