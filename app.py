@@ -3,14 +3,18 @@
 Google Form Klonlayıcı - Nihai Sürüm (Tüm Hatalar Düzeltildi)
 
 Bu sürüm, güvenilir JSON ayrıştırma mantığı ile kullanıcı tarafından
-bildirilen bölüm, seçenek görseli, link ve Excel export hatalarını düzeltir.
+bildirilen tüm hataları (başlık kopyalama, UX) düzeltir ve tüm özellikleri korur.
 
 - Production (Railway / Render / Heroku) uyumlu.
-- Zengin Metin Desteği: Başlık, Açıklama, kalın, italik, altı çizili, link ve listeleri tam olarak korur. (Düzeltildi)
+- Zengin Metin Desteği: Başlık, Açıklama, kalın, italik, altı çizili, link ve listeleri tam olarak korur.
 - Tam Soru Tipi Desteği: Matris, Ölçek, Tarih, Saat, Derecelendirme dahil tüm yaygın tipleri destekler.
-- Medya Desteği: Sorulara ve seçeneklere eklenen görselleri doğru şekilde destekler. (Düzeltildi)
+- Medya Desteği: Sorulara ve seçeneklere eklenen görselleri doğru şekilde destekler.
 - Doğru Bölümleme: Google Formlar'daki "Bölüm" mantığını doğru şekilde uygular.
-- Gelişmiş UX: "Diğer" seçeneği, zorunlu alan doğrulaması, şık tasarım korunmuştur.
+- Gelişmiş UX:
+  - Radyo butonu satırına tıklayarak seçim kaldırma. (İyileştirildi)
+  - "Diğer" seçeneği için otomatik seçim.
+  - Zorunlu alan doğrulaması.
+  - Şık, kutulu ve modern bir tasarım.
 - Kısa Link Desteği: 'forms.gle' linklerini otomatik olarak çözer.
 """
 
@@ -31,7 +35,7 @@ app.secret_key = os.environ.get("SECRET_KEY", "a-very-secure-dev-fallback-key-in
 def analyze_google_form(url: str):
     """
     Verilen Google Form URL'sini, güvenilir JSON verisini kullanarak analiz eder.
-    Bölüm, seçenek görseli, link ve diğer zengin metin hataları bu fonksiyonda düzeltilmiştir.
+    Başlık kopyalama hatası bu fonksiyonda düzeltilmiştir.
     """
     try:
         headers = {
@@ -84,12 +88,14 @@ def analyze_google_form(url: str):
                         if current_page:
                             form_data['pages'].append(current_page)
                         current_page = []
-
-                    # DÜZELTME: ZENGİN METİN VE LİNKLER
+                    
+                    # DÜZELTME: BAŞLIK KOPYALAMA SORUNU
+                    # Başlık ve Açıklamayı ayrı ayrı ve doğru kaynaklardan al
                     rich_text_info = q[-1] if isinstance(q[-1], list) else []
-                    question['text'] = (rich_text_info[1] if len(rich_text_info) > 1 and rich_text_info[1] and 'href' in rich_text_info[1]
-                                        else (q[-2][1] if len(q) > 11 and isinstance(q[-2], list) and len(q[-2]) > 1 and q[-2][1] else q_text_plain)) or ''
-                    rich_desc = rich_text_info[1] if len(rich_text_info) > 1 and rich_text_info[1] and 'href' not in question['text'] else None
+                    rich_title = rich_text_info[1] if len(rich_text_info) > 1 and rich_text_info[1] else None
+                    rich_desc = rich_text_info[2] if len(rich_text_info) > 2 and rich_text_info[2] else None
+                    
+                    question['text'] = rich_title or q_text_plain or ''
                     question['description'] = rich_desc or q_desc_plain or ''
 
 
@@ -159,7 +165,7 @@ def analyze_google_form(url: str):
     return {"form_data": form_data}
 
 
-# --- HTML Şablonu (Tüm Özelliklerle Birlikte) ---
+# --- HTML Şablonu (JavaScript Kısmı Güncellendi) ---
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="tr">
@@ -301,9 +307,26 @@ HTML_TEMPLATE = """
 </div>
 <script>
 document.addEventListener('DOMContentLoaded', () => {
-    let radioMouseDownChecked;
-    document.body.addEventListener('mousedown', e => { if (e.target.tagName === 'INPUT' && e.target.type === 'radio') { radioMouseDownChecked = e.target.checked; }}, true);
-    document.body.addEventListener('click', e => { if (e.target.tagName === 'INPUT' && e.target.type === 'radio' && e.target.checked && radioMouseDownChecked) { e.target.checked = false; }});
+    // DÜZELTME: RADYO BUTONU SEÇİMİNİ KALDIRMA
+    document.querySelectorAll('.radio-group > label').forEach(label => {
+        const radio = label.querySelector('input[type="radio"]');
+        if (radio) {
+            let wasCheckedOnMouseDown = false;
+            // Tıklamadan hemen önce radio butonun durumunu kaydet
+            label.addEventListener('mousedown', (e) => {
+                wasCheckedOnMouseDown = radio.checked;
+            });
+            // Tıkladıktan sonra, eğer zaten seçili idiyse seçimi kaldır
+            label.addEventListener('click', (e) => {
+                if (wasCheckedOnMouseDown) {
+                    radio.checked = false;
+                }
+            });
+        }
+    });
+
+    // "Diğer" seçeneği için metin kutusuna odaklanıldığında/yazıldığında
+    // ilgili radyo/onay kutusunu seçme mantığı (korundu)
     document.querySelectorAll('.other-option-input').forEach(textInput => {
         const checkAssociatedControl = () => {
             const associatedControl = textInput.closest('label').querySelector('input[type=radio], input[type=checkbox]');
@@ -312,9 +335,14 @@ document.addEventListener('DOMContentLoaded', () => {
         textInput.addEventListener('input', checkAssociatedControl);
         textInput.addEventListener('focus', checkAssociatedControl);
     });
+
     const pageCount = document.querySelectorAll('.page').length;
-    if(pageCount > 0) { showPage(0); } else { document.querySelector('.navigation-buttons').style.display = 'none'; }
+    if(pageCount > 0) { showPage(0); } else { 
+        const navButtons = document.querySelector('.navigation-buttons');
+        if (navButtons) navButtons.style.display = 'none'; 
+    }
 });
+
 let currentPageIndex = 0;
 const pages = document.querySelectorAll('.page');
 const backButton = document.getElementById('back-button');
@@ -322,7 +350,8 @@ const nextButton = document.getElementById('next-button');
 const submitButton = document.getElementById('submit-button');
 
 function updateButtons() {
-    if (!pages.length || pages.length <= 1) {
+    if (!pages.length) return;
+    if (pages.length <= 1) {
         if(backButton) backButton.style.display = 'none';
         if(nextButton) nextButton.style.display = 'none';
         if(submitButton) submitButton.style.display = 'inline-block';
