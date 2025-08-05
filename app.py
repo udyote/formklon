@@ -27,7 +27,6 @@ def wrap_with_tags(inner_html, bold=False, italic=False, underline=False):
     """
     soup = BeautifulSoup(inner_html, "html.parser")
     content = soup
-    # Altı çizgi -> italic -> bold iç içe
     if underline:
         tag = soup.new_tag("u"); tag.append(content); content = tag
     if italic:
@@ -40,14 +39,12 @@ def wrap_with_tags(inner_html, bold=False, italic=False, underline=False):
 def get_inner_html(element):
     """
     Element içindeki HTML'i, semantik etiketleri koruyarak döner.
-    <span style=> gibi inline stilleri b, i, u etiketlerine dönüştürür.
+    Inline stilleri b, i, u etiketlerine dönüştürür.
     """
     if not element:
         return ""
-    # Gereksiz <font> etiketlerini kaldır
     for tag in element.find_all('font'):
         tag.unwrap()
-    # <span style=> içindeki stilleri semantik etiketlere çevir
     for span in element.find_all('span'):
         style = span.get('style', '').lower()
         bold = 'font-weight' in style and any(x in style for x in ['700','bold'])
@@ -74,7 +71,6 @@ def analyze_google_form(url: str):
                            'AppleWebKit/537.36 (KHTML, like Gecko) '
                            'Chrome/122.0.0.0 Safari/537.36')
         }
-        # forms.gle kısaltmalarını çöz
         if 'forms.gle/' in url:
             resp = requests.head(url, allow_redirects=True, timeout=10, headers=headers)
             resp.raise_for_status()
@@ -85,20 +81,16 @@ def analyze_google_form(url: str):
         return {"error": f"URL okunamadı: {e}"}
 
     soup = BeautifulSoup(resp.text, 'html.parser')
-    # 1) <head> içindeki tüm <link> ve <style> etiketlerini topla
     head = soup.head or BeautifulSoup('<head></head>','html.parser').head
     head_tags = [str(tag) for tag in head.find_all(['link','style'])]
     head_html = '\n'.join(head_tags)
 
-    # 2) Form yapısını çıkar
     form_data = { 'pages': [] }
-    # Başlık & açıklama
     title_div = soup.find('div', class_='F9yp7e')
     form_data['title'] = get_inner_html(title_div) if title_div else 'İsimsiz Form'
     desc_div = soup.find('div', class_='cBGGJ')
     form_data['description'] = get_inner_html(desc_div) if desc_div else ''
 
-    # FB_PUBLIC_LOAD_DATA_ script'ini bul
     for script in soup.find_all('script'):
         if script.string and 'FB_PUBLIC_LOAD_DATA_' in script.string:
             try:
@@ -106,7 +98,6 @@ def analyze_google_form(url: str):
                 data = json.loads(raw)
                 question_list = data[1][1]
                 current_page = []
-                # E-posta sorusu
                 email_div = soup.find('div', {'jsname':'Y0xS1b'})
                 if email_div:
                     parent = email_div.find_parent('div', {'jsmodel':'CP1oW'})
@@ -115,33 +106,28 @@ def analyze_google_form(url: str):
                         eid = p.split(',')[-1].split('"')[0]
                         if eid.isdigit():
                             current_page.append({
-                                'type':'E-posta', 'text':'E-posta',
+                                'type':'E-posta','text':'E-posta',
                                 'description':'Lütfen e-posta girin.',
-                                'entry_id':f'entry.{eid}', 'required':True,
+                                'entry_id':f'entry.{eid}','required':True,
                                 'image_url':None
                             })
-                # Soruları işle
                 for q in question_list:
                     try:
                         qid, qtext, qdesc, qtype, qinfo = q[0], q[1], q[2], q[3], q[4]
                         question = { 'image_url':None }
                         container = soup.find('div', {'data-item-id':str(qid)})
-                        # Metin & açıklama
                         txt_el = container.select_one('.M7eMe') if container else None
                         dsc_el = container.select_one('.OIC90c') if container else None
                         question['text'] = get_inner_html(txt_el) if txt_el else qtext
                         question['description'] = get_inner_html(dsc_el) if dsc_el else (qdesc or '')
-                        # Görsel
                         if container:
                             img = container.select_one('.y6GzNb img')
                             if img and img.has_attr('src'):
                                 question['image_url'] = img['src']
-                        # Medya başlık
                         if qinfo is None:
                             question['type'] = 'Media'
                             current_page.append(question)
                             continue
-                        # Tablo soruları
                         if qtype == 7:
                             rows = qinfo
                             first = rows[0]
@@ -152,21 +138,18 @@ def analyze_google_form(url: str):
                             question['rows'] = [{'text':r[3][0],'entry_id':f"entry.{r[0]}"} for r in rows]
                         else:
                             entry_id = qinfo[0]
-                            required = bool(qinfo[2])
                             question['entry_id'] = f'entry.{entry_id}'
-                            question['required'] = required
-                            # Tip bazlı işlem
+                            question['required'] = bool(qinfo[2])
                             if qtype == 0:
                                 question['type'] = 'Kısa Yanıt'
                             elif qtype == 1:
                                 question['type'] = 'Paragraf'
                             elif qtype in (2,4):
-                                question['options']=[]; question['has_other']=False
+                                question['options']=[];question['has_other']=False
                                 for opt in qinfo[1]:
-                                    # Diğer
                                     if len(opt)>4 and opt[4]:
-                                        question['has_other']=True; continue
-                                    if not opt[0] and opt[0] != '': continue
+                                        question['has_other']=True;continue
+                                    if not opt[0] and opt[0] != '':continue
                                     question['options'].append({'text':opt[0],'image_url':None})
                                 question['type'] = ('Çoktan Seçmeli' if qtype==2 else 'Onay Kutuları')
                             elif qtype == 3:
@@ -188,13 +171,11 @@ def analyze_google_form(url: str):
                             else:
                                 continue
                         current_page.append(question)
-                        # Sayfa bitişi
                         if len(q)>12 and q[12]:
                             form_data['pages'].append(current_page)
                             current_page = []
                     except Exception:
                         continue
-                # Kalan sayfa
                 if current_page:
                     form_data['pages'].append(current_page)
                 break
