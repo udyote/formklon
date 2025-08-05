@@ -1,24 +1,19 @@
 # -*- coding: utf-8 -*-
 """
-Google Form Klonlayıcı - Nihai Sürüm
-Production (Railway / Render / Heroku) uyumlu.
-- SECRET_KEY .env / ortam değişkeninden okunur
-- Gunicorn ile çalıştırılabilir
-- Google Form verisini çekip yeniden oluşturur ve cevapları Excel indirir
-- Zengin Metin Desteği: Başlık/Açıklama, kalın, italik, altı çizili, link ve listeleri tam olarak korur.
-- Medya Desteği: Sorulara ve seçeneklere eklenen görselleri destekler.
-- Doğru Bölümleme: Google Formlar'daki "Bölüm" mantığını çok sayfalı form olarak doğru şekilde uygular.
-- UX Düzeltmeleri: "Diğer" seçeneği ve radyo düğmesi seçimini kaldırma gibi JS iyileştirmeleri içerir.
-- Kısa Link Desteği: 'forms.gle' linklerini otomatik olarak çözer.
-- Hata ayıklama: Form URL'si girildiğinde tüm ham HTML otomatik olarak .txt olarak indirilir.
+Google Form Klonlayıcı - Stil Bilgilerini Koruyan Tam Sürüm
+- Orijinal <head> içindeki tüm <link> ve <style> etiketleri klon sayfasına eklenir
+- Zengin Metin Desteği: Başlık/Açıklama, kalın, italik, altı çizili, link ve listeleri korur
+- Medya Desteği: Görselleri destekler
+- Doğru Bölümleme: Bölüm mantığıyla çok sayfalı formu uygular
+- UX İyileştirmeleri: "Diğer" seçeneği, radyo tuşu seçim kaldırma
+- Kısa Link Desteği: forms.gle linklerini çözer
 """
-
 import os
 import io
 import json
 import requests
 import pandas as pd
-from bs4 import BeautifulSoup, Tag
+from bs4 import BeautifulSoup
 from flask import Flask, request, render_template_string, send_file, session
 from datetime import datetime
 
@@ -28,561 +23,346 @@ app.secret_key = os.environ.get("SECRET_KEY", "dev-fallback-key")
 
 def wrap_with_tags(inner_html, bold=False, italic=False, underline=False):
     """
-    Verilen inner_html'i gerekli semantik etiketlerle sarar.
-    Sıralı: underline -> italic -> bold (iç içe)
+    Verilen inner_html'i semantik etiketlerle sarar: <b>, <i>, <u>
     """
     soup = BeautifulSoup(inner_html, "html.parser")
     content = soup
+    # Altı çizgi -> italic -> bold iç içe
     if underline:
-        new_tag = soup.new_tag("u")
-        new_tag.append(content)
-        content = new_tag
+        tag = soup.new_tag("u"); tag.append(content); content = tag
     if italic:
-        new_tag = soup.new_tag("i")
-        new_tag.append(content)
-        content = new_tag
+        tag = soup.new_tag("i"); tag.append(content); content = tag
     if bold:
-        new_tag = soup.new_tag("b")
-        new_tag.append(content)
-        content = new_tag
+        tag = soup.new_tag("b"); tag.append(content); content = tag
     return str(content)
 
 
 def get_inner_html(element):
     """
-    HTML içerikleri biçimlendirme etiketleriyle birlikte döner (b, i, u, a, ul, ol, li).
-    <font> ve gereksiz <span> gibi yapılar da temizlenir; inline stiller semantik etiketlere
-    dönüştürülür (kalın, italik, altı çizili).
+    Element içindeki HTML'i, semantik etiketleri koruyarak döner.
+    <span style=> gibi inline stilleri b, i, u etiketlerine dönüştürür.
     """
     if not element:
         return ""
-
-    # Kopyasını al (yan etkiden kaçınmak için)
-    element = element.__copy__() if hasattr(element, "__copy__") else element
-
-    # <font> gibi gereksiz etiketleri kaldır ama içeriğini koru
-    for tag in element.find_all(['font']):
+    # Gereksiz <font> etiketlerini kaldır
+    for tag in element.find_all('font'):
         tag.unwrap()
-
-    # Style ile gelen biçimlendirmeleri semantik etiketlerle uygula
-    for span in element.find_all("span"):
-        style = span.get("style", "").lower()
-        bold = False
-        italic = False
-        underline = False
-
-        if "font-weight" in style:
-            try:
-                if any(k in style for k in ["700", "bold"]):
-                    bold = True
-            except:
-                pass
-        if "font-style:italic" in style or "italic" in style:
-            italic = True
-        if "text-decoration" in style and "underline" in style:
-            underline = True
-
-        # Eğer semantik etiketler zaten varsa bırak
+    # <span style=> içindeki stilleri semantik etiketlere çevir
+    for span in element.find_all('span'):
+        style = span.get('style', '').lower()
+        bold = 'font-weight' in style and any(x in style for x in ['700','bold'])
+        italic = 'font-style:italic' in style or 'italic' in style
+        underline = 'text-decoration' in style and 'underline' in style
         if bold or italic or underline:
-            inner = "".join(str(c) for c in span.contents)
+            inner = ''.join(str(c) for c in span.contents)
             wrapped = wrap_with_tags(inner, bold=bold, italic=italic, underline=underline)
-            # BeautifulSoup ile parse ederek orijinal span'ı değiştir
-            new_fragment = BeautifulSoup(wrapped, "html.parser")
-            span.replace_with(new_fragment)
+            new_frag = BeautifulSoup(wrapped, 'html.parser')
+            span.replace_with(new_frag)
         else:
-            # Stil taşıyan ama değerlendirilmemiş span'ları sadeleştir (örn: sadece span bırakmayalım)
-            if not span.contents:
-                span.decompose()
-            else:
-                span.unwrap()
-
-    # Sonuçta sadece desteklenen etiketler kalır (b, i, u, a, ul, ol, li vb.) – diğerleri korunabilir ama
-    # dış kabuğu olmadan içeriği döndür.
-    inner_html = element.decode_contents().strip()
-    return inner_html
+            span.unwrap()
+    return element.decode_contents().strip()
 
 
 def analyze_google_form(url: str):
-    """Google Form URL'sini parse ederek zengin metin, görseller ve doğru bölümlemeyi içeren form yapısını döndürür."""
+    """
+    Google Form URL'sini çekip analiz eder.
+    Döner: { form_data, head_html } veya hata: { error }
+    """
     try:
         headers = {
-            'User-Agent': ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36')
+            'User-Agent': ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                           'AppleWebKit/537.36 (KHTML, like Gecko) '
+                           'Chrome/122.0.0.0 Safari/537.36')
         }
-        if "forms.gle/" in url:
-            head_response = requests.head(url, allow_redirects=True, timeout=10, headers=headers)
-            head_response.raise_for_status()
-            url = head_response.url
-        response = requests.get(url, headers=headers, timeout=15)
-        response.raise_for_status()
-    except requests.exceptions.RequestException as e:
-        return {"error": f"URL okunamadı. Geçerli bir Google Form linki girin. Hata: {e}"}
+        # forms.gle kısaltmalarını çöz
+        if 'forms.gle/' in url:
+            resp = requests.head(url, allow_redirects=True, timeout=10, headers=headers)
+            resp.raise_for_status()
+            url = resp.url
+        resp = requests.get(url, headers=headers, timeout=15)
+        resp.raise_for_status()
+    except requests.RequestException as e:
+        return {"error": f"URL okunamadı: {e}"}
 
-    raw_html_text = response.text  # Ham HTML, debug / indirme için
+    soup = BeautifulSoup(resp.text, 'html.parser')
+    # 1) <head> içindeki tüm <link> ve <style> etiketlerini topla
+    head = soup.head or BeautifulSoup('<head></head>','html.parser').head
+    head_tags = [str(tag) for tag in head.find_all(['link','style'])]
+    head_html = '\n'.join(head_tags)
 
-    soup = BeautifulSoup(raw_html_text, 'html.parser')
-    form_data = {"pages": []}
-
+    # 2) Form yapısını çıkar
+    form_data = { 'pages': [] }
+    # Başlık & açıklama
     title_div = soup.find('div', class_='F9yp7e')
-    form_data['title'] = get_inner_html(title_div) if title_div else "İsimsiz Form"
+    form_data['title'] = get_inner_html(title_div) if title_div else 'İsimsiz Form'
     desc_div = soup.find('div', class_='cBGGJ')
-    form_data['description'] = get_inner_html(desc_div) if desc_div else ""
+    form_data['description'] = get_inner_html(desc_div) if desc_div else ''
 
+    # FB_PUBLIC_LOAD_DATA_ script'ini bul
     for script in soup.find_all('script'):
         if script.string and 'FB_PUBLIC_LOAD_DATA_' in script.string:
             try:
                 raw = script.string.replace('var FB_PUBLIC_LOAD_DATA_ = ', '').rstrip(';')
                 data = json.loads(raw)
                 question_list = data[1][1]
-
                 current_page = []
-
-                email_div = soup.find('div', {'jsname': 'Y0xS1b'})
+                # E-posta sorusu
+                email_div = soup.find('div', {'jsname':'Y0xS1b'})
                 if email_div:
+                    parent = email_div.find_parent('div', {'jsmodel':'CP1oW'})
+                    if parent and parent.has_attr('data-params'):
+                        p = parent['data-params']
+                        eid = p.split(',')[-1].split('"')[0]
+                        if eid.isdigit():
+                            current_page.append({
+                                'type':'E-posta', 'text':'E-posta',
+                                'description':'Lütfen e-posta girin.',
+                                'entry_id':f'entry.{eid}', 'required':True,
+                                'image_url':None
+                            })
+                # Soruları işle
+                for q in question_list:
                     try:
-                        parent = email_div.find_parent('div', {'jsmodel': 'CP1oW'})
-                        if parent and parent.has_attr('data-params'):
-                            p = parent['data-params']
-                            entry_id_part = p.split(',')[-1].split('"')[0]
-                            if entry_id_part.isdigit():
-                                current_page.append({
-                                    'text': 'E-posta', 'description': 'Lütfen geçerli bir e-posta adresi girin.',
-                                    'type': 'E-posta', 'entry_id': f'entry.{entry_id_part}', 'required': True, 'image_url': None
-                                })
-                    except Exception:
-                        pass
-
-                for q_data in question_list:
-                    try:
-                        item_id = q_data[0]
-                        q_type = q_data[3]
-                        question = {'image_url': None}
-                        item_container = soup.find('div', {'data-item-id': str(item_id)})
-
-                        q_text_element = item_container.select_one('.M7eMe') if item_container else None
-                        q_desc_element = item_container.select_one('.OIC90c') if item_container else None
-
-                        question['text'] = get_inner_html(q_text_element) if q_text_element else (q_data[1] if len(q_data) > 1 else "")
-                        question['description'] = get_inner_html(q_desc_element) if q_desc_element else (q_data[2] if len(q_data) > 2 and q_data[2] else "")
-
-                        if item_container:
-                            img_elem = item_container.select_one('.y6GzNb img')
-                            if img_elem and img_elem.has_attr('src'):
-                                question['image_url'] = img_elem.get('src')
-
-                        if q_data[4] is None:
-                            current_page.append({'type': 'Media', 'text': question['text'], 'description': question['description'], 'image_url': question['image_url']})
+                        qid, qtext, qdesc, qtype, qinfo = q[0], q[1], q[2], q[3], q[4]
+                        question = { 'image_url':None }
+                        container = soup.find('div', {'data-item-id':str(qid)})
+                        # Metin & açıklama
+                        txt_el = container.select_one('.M7eMe') if container else None
+                        dsc_el = container.select_one('.OIC90c') if container else None
+                        question['text'] = get_inner_html(txt_el) if txt_el else qtext
+                        question['description'] = get_inner_html(dsc_el) if dsc_el else (qdesc or '')
+                        # Görsel
+                        if container:
+                            img = container.select_one('.y6GzNb img')
+                            if img and img.has_attr('src'):
+                                question['image_url'] = img['src']
+                        # Medya başlık
+                        if qinfo is None:
+                            question['type'] = 'Media'
+                            current_page.append(question)
                             continue
-
-                        if q_type == 7:
-                            rows_data = q_data[4]
-                            if not (isinstance(rows_data, list) and rows_data):
-                                continue
-                            first_row = rows_data[0]
-                            question['type'] = 'Onay Kutusu Tablosu' if len(first_row) > 11 and first_row[11] and first_row[11][0] else 'Çoktan Seçmeli Tablosu'
-                            question['required'] = bool(first_row[2])
-                            question['cols'] = [c[0] for c in first_row[1]]
-                            question['rows'] = [{'text': r[3][0], 'entry_id': f"entry.{r[0]}"} for r in rows_data]
+                        # Tablo soruları
+                        if qtype == 7:
+                            rows = qinfo
+                            first = rows[0]
+                            question['type'] = ('Onay Kutusu Tablosu' if first[11] and first[11][0]
+                                else 'Çoktan Seçmeli Tablosu')
+                            question['required'] = bool(first[2])
+                            question['cols'] = [c[0] for c in first[1]]
+                            question['rows'] = [{'text':r[3][0],'entry_id':f"entry.{r[0]}"} for r in rows]
                         else:
-                            q_info = q_data[4][0]
-                            question['entry_id'] = f"entry.{q_info[0]}"
-                            question['required'] = bool(q_info[2])
-
-                            if q_type == 0:
+                            entry_id = qinfo[0]
+                            required = bool(qinfo[2])
+                            question['entry_id'] = f'entry.{entry_id}'
+                            question['required'] = required
+                            # Tip bazlı işlem
+                            if qtype == 0:
                                 question['type'] = 'Kısa Yanıt'
-                            elif q_type == 1:
+                            elif qtype == 1:
                                 question['type'] = 'Paragraf'
-                            elif q_type in (2, 4):
-                                question['options'] = []
-                                question['has_other'] = False
-                                if q_info[1]:
-                                    # Daha esnek seçenek yakalama (class değişmişse fallback)
-                                    option_html_elements = item_container.select('.docssharedWizToggleLabeledContainer') if item_container else []
-                                    for i, opt in enumerate(q_info[1]):
-                                        if len(opt) > 4 and opt[4]:
-                                            question['has_other'] = True
-                                            continue
-                                        if not opt[0] and opt[0] != "":
-                                            continue
-                                        opt_image_url = None
-                                        if i < len(option_html_elements):
-                                            img_tag = option_html_elements[i].select_one('.LAANW img.QU5LQc')
-                                            if img_tag and img_tag.has_attr('src'):
-                                                opt_image_url = img_tag.get('src')
-                                        question['options'].append({'text': opt[0], 'image_url': opt_image_url})
-                                question['type'] = 'Çoktan Seçmeli' if q_type == 2 else 'Onay Kutuları'
-                            elif q_type == 3:
-                                question['type'] = 'Açılır Liste'
-                                question['options'] = [o[0] for o in q_info[1] if o[0]]
-                            elif q_type == 5:
-                                question['type'] = 'Doğrusal Ölçek'
-                                question['options'] = [o[0] for o in q_info[1]]
-                                question['labels'] = q_info[3] if len(q_info) > 3 and q_info[3] else ["", ""]
-                            elif q_type == 18:
-                                question['type'] = 'Derecelendirme'
-                                question['options'] = [str(o[0]) for o in q_info[1]]
-                            elif q_type == 9:
-                                question['type'] = 'Tarih'
-                            elif q_type == 10:
-                                question['type'] = 'Saat'
-                            elif q_type == 6:
-                                question['type'] = 'Başlık'
+                            elif qtype in (2,4):
+                                question['options']=[]; question['has_other']=False
+                                for opt in qinfo[1]:
+                                    # Diğer
+                                    if len(opt)>4 and opt[4]:
+                                        question['has_other']=True; continue
+                                    if not opt[0] and opt[0] != '': continue
+                                    question['options'].append({'text':opt[0],'image_url':None})
+                                question['type'] = ('Çoktan Seçmeli' if qtype==2 else 'Onay Kutuları')
+                            elif qtype == 3:
+                                question['type']='Açılır Liste'
+                                question['options']=[o[0] for o in qinfo[1] if o[0]]
+                            elif qtype == 5:
+                                question['type']='Doğrusal Ölçek'
+                                question['options']=[o[0] for o in qinfo[1]]
+                                question['labels']=qinfo[3] if len(qinfo)>3 else ['','']
+                            elif qtype == 18:
+                                question['type']='Derecelendirme'
+                                question['options']=[str(o[0]) for o in qinfo[1]]
+                            elif qtype == 9:
+                                question['type']='Tarih'
+                            elif qtype == 10:
+                                question['type']='Saat'
+                            elif qtype == 6:
+                                question['type']='Başlık'
                             else:
                                 continue
-
                         current_page.append(question)
-
-                        is_page_break = len(q_data) > 12 and q_data[12]
-                        if is_page_break:
+                        # Sayfa bitişi
+                        if len(q)>12 and q[12]:
                             form_data['pages'].append(current_page)
                             current_page = []
-
-                    except (IndexError, TypeError, KeyError) as e:
-                        print(f"DEBUG: Bir soru işlenirken hata oluştu (ID: {q_data[0]}). Soru atlanıyor. Hata: {e}")
+                    except Exception:
                         continue
-
+                # Kalan sayfa
                 if current_page:
                     form_data['pages'].append(current_page)
-
-                if not form_data['pages'] and current_page:
-                    form_data['pages'].append(current_page)
-
                 break
-            except (json.JSONDecodeError, IndexError, TypeError) as e:
-                return {"error": f"Form verileri ayrıştırılamadı (format değişmiş olabilir). Hata: {e}", "raw_html": raw_html_text}
+            except Exception as e:
+                return {"error": f"Ayrıştırma hatası: {e}"}
+    if not form_data['pages']:
+        return {"error": "Formda soru bulunamadı."}
+    return {"form_data": form_data, "head_html": head_html}
 
-    if not form_data['pages'] or not form_data['pages'][0]:
-        return {"error": "Formda analiz edilecek soru veya bölüm bulunamadı.", "raw_html": raw_html_text}
-    return {"form_data": form_data, "raw_html": raw_html_text}
-
-
+# HTML Şablonu
 HTML_TEMPLATE = """<!DOCTYPE html>
-<html lang="tr"><head><meta charset="UTF-8"><title>Google Form Klonlayıcı</title>
-<meta name="viewport" content="width=device-width,initial-scale=1.0">
-<style>
-:root {
-    --bs-green: #198754; --bs-dark-green: #157347; --bs-border-color: #dee2e6;
-    --bs-input-border-color: #ced4da; --bs-body-bg: #f8f9fa; --bs-body-color: #212529;
-    --bs-secondary-color: #6c757d; --bs-focus-ring-color: rgba(13, 110, 253, 0.25);
-    --bs-focus-border-color: #86b7fe;
-}
-body{
-    font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", "Noto Sans", "Liberation Sans", Arial, sans-serif;
-    background-color: var(--bs-body-bg); color: var(--bs-body-color); margin:0;
-    padding:2rem; display:flex; justify-content:center;
-}
-.container{
-    max-width:760px; width:100%; background:#fff; padding:2rem 2.5rem;
-    border-radius:8px; box-shadow:0 4px 15px rgba(0,0,0,.07); border: 1px solid var(--bs-border-color);
-}
-h1, h2{text-align:center;color:#343a40;font-weight:600;}
-h1{margin:0 0 1rem}
-h2{margin-top:2rem;}
-a {color: var(--bs-green); text-decoration: underline;}
-a:hover {text-decoration: none;}
-.form-group{
-    margin-bottom:1.5rem; padding:1.5rem; border:1px solid var(--bs-border-color); border-radius:8px;
-}
-.page-counter {
-    text-align: center; font-weight: bold; margin-bottom: 1rem; padding: 0.5rem;
-    background-color: #e9ecef; border-radius: 6px;
-}
-.question-label{display:block; font-weight:600; margin-bottom:.75rem; color: var(--bs-body-color); line-height:1.4;}
-.question-description{white-space:pre-wrap; color: var(--bs-secondary-color); line-height:1.5; margin-top:-0.5rem; margin-bottom:1rem; font-size:0.9rem;}
-.question-description ul,.question-description ol{margin-top:0.5rem;padding-left:1.5rem;}
-.required-star{color:#dc3545;margin-left:4px}
-input[type=text],input[type=email],textarea,select,input[type=date],input[type=time]{
-    width:100%; padding:.5rem 1rem; border:1px solid var(--bs-input-border-color);
-    border-radius: 0.375rem; box-sizing:border-box; font-size:1rem; line-height: 1.5;
-    transition: border-color .15s ease-in-out, box-shadow .15s ease-in-out;
-}
-textarea{min-height:100px;resize:vertical}
-input:focus,textarea:focus,select:focus{
-    outline:none; border-color: var(--bs-focus-border-color);
-    box-shadow:0 0 0 0.25rem var(--bs-focus-ring-color);
-}
-.radio-group,.checkbox-group{display:flex;flex-direction:column;gap:.5rem}
-.radio-group label,.checkbox-group label{display:flex;align-items:flex-start;gap:.8rem;cursor:pointer;padding:.5rem .7rem;border-radius:6px}
-.radio-group label:hover,.checkbox-group label:hover{background-color: #f8f9fa;}
-input[type=radio],input[type=checkbox]{flex-shrink:0;margin-top:0.3rem;width:1.1rem;height:1.1rem;accent-color: var(--bs-green);}
-.btn{
-    background-color: var(--bs-green); color:#fff; padding:.75rem 1.5rem;
-    border:1px solid var(--bs-green); width:100%; border-radius: 0.375rem;
-    font-size:1rem; font-weight:600; cursor:pointer; text-align: center;
-    transition: background-color .15s ease-in-out, border-color .15s ease-in-out;
-}
-.btn:hover{background-color: var(--bs-dark-green); border-color: #146c43;}
-.btn-secondary {
-    background-color: #6c757d; border-color: #6c757d;
-}
-.btn-secondary:hover {
-    background-color: #5c636a; border-color: #565e64;
-}
-.navigation-buttons { display: flex; justify-content: space-between; gap: 1rem; margin-top: 2rem; }
-.navigation-buttons .btn { width: auto; flex-grow: 1; }
-.error-message{background:#f8d7da;color:#58151c;border: 1px solid #f1aeb5;padding:1rem;border-radius:6px;text-align:center}
-.grid-table{width:100%;border-collapse:collapse;margin-top:.5rem}
-.grid-table th,.grid-table td{border:1px solid var(--bs-border-color);padding:.6rem;text-align:center;font-size:.9rem}
-.grid-table th{background:#f8f9fa}
-.grid-table td:first-child{text-align:left;font-weight:600}
-.rating-group{display:flex;flex-direction:row-reverse;justify-content:center;gap:5px}
-.rating-group input{display:none} .rating-group label{font-size:2rem;color:#ccc;cursor:pointer}
-.rating-group input:checked ~ label,.rating-group label:hover,.rating-group label:hover ~ label{color:#ffc107}
-.other-option-label{align-items:center} .other-option-input{flex-grow:1;margin-left: .5rem; padding:.4rem .6rem}
-.title-description-block{padding-bottom:1rem;border-bottom:1px solid var(--bs-border-color);margin-bottom:1.6rem}
-.section-title{margin-top:0;margin-bottom:0.5rem;font-size:1.3em;color:var(--bs-body-color);}
-.section-description{white-space:pre-wrap;color:var(--bs-secondary-color);line-height:1.5;margin-top:0;font-size:0.95em}
-.section-description ul,.section-description ol, .question-description ul, .question-description ol{margin-top:0.5rem;padding-left:1.5rem;}
-.main-description{white-space:pre-wrap;color: var(--bs-body-color); line-height:1.5;}
-.main-description ul,.main-description ol{margin-top:0.5rem;padding-left:1.5rem;}
-.form-image-container{text-align:center;margin-bottom:1rem;margin-top:1rem;}
-.form-image-container img{max-width:100%;height:auto;max-height:450px;border-radius:8px;border:1px solid var(--bs-border-color);}
-.option-content{display:flex;flex-direction:column;align-items:flex-start;width:100%}
-.option-image-container img{max-width:260px;width:100%;height:auto;display:block;margin-bottom:0.6rem;border-radius:6px;border:1px solid var(--bs-border-color);}
-.option-text{line-height:1.4}
-</style></head>
-<body><div class="container">
-<h1>Google Form Klonlayıcı</h1>
-<form method="post" action="/"><div class="form-group" style="padding:1rem;">
-<input type="text" name="url" placeholder="https://docs.google.com/forms/d/e/... veya https://forms.gle/..." required>
-<button type="submit" class="btn" style="margin-top:1rem;">Formu Oluştur</button>
-</div></form>
-{% if error %}<div class="error-message">{{ error }}</div>{% endif %}
-{% if form_data %}
-<h2 style="text-align:center;margin-top:1.5rem; line-height: 1.4;">{{ form_data.title | safe }}</h2>
-{% if form_data.description %}<div class="main-description">{{ form_data.description | safe }}</div>{% endif %}
-<form method="post" action="/submit" id="clone-form">
-{% for page in form_data.pages %}
-<div class="page" id="page-{{ loop.index0 }}" style="display: {% if loop.index0 == 0 %}block{% else %}none{% endif %};">
-    {% if form_data.pages | length > 1 %}<div class="page-counter">Bölüm {{ loop.index }} / {{ form_data.pages | length }}</div>{% endif %}
-    {% for q in page %}
-        {% if q.type == 'Başlık' or q.type == 'Media' %}
-        <div class="title-description-block">
-            <div class="section-title">{{ q.text | safe }}</div>
-            {% if q.description %}<div class="section-description">{{ q.description | safe }}</div>{% endif %}
-            {% if q.image_url %}<div class="form-image-container"><img src="{{ q.image_url }}" alt="Başlık Görseli"></div>{% endif %}
-        </div>
-        {% else %}
-        <div class="form-group">
-            <div class="question-label">{{ q.text | safe }} {% if q.required %}<span class="required-star">*</span>{% endif %}</div>
-            {% if q.description %}<div class="question-description">{{ q.description | safe }}</div>{% endif %}
-            {% if q.image_url %}<div class="form-image-container"><img src="{{ q.image_url }}" alt="Soru Görseli"></div>{% endif %}
-
-            {% if q.type == 'E-posta' %} <input type="email" name="{{ q.entry_id }}" required>
-            {% elif q.type == 'Kısa Yanıt' %} <input type="text" name="{{ q.entry_id }}" {% if q.required %}required{% endif %}>
-            {% elif q.type == 'Paragraf' %} <textarea name="{{ q.entry_id }}" {% if q.required %}required{% endif %}></textarea>
-            {% elif q.type == 'Çoktan Seçmeli' %}
-            <div class="radio-group">
-            {% for opt in q.options %}
-            <label><input type="radio" name="{{ q.entry_id }}" value="{{ opt.text }}" {% if q.required %}required{% endif %}><div class="option-content">{% if opt.image_url %}<div class="option-image-container"><img src="{{ opt.image_url }}" alt="{{ opt.text }}"></div>{% endif %}<span class="option-text">{{ opt.text | safe }}</span></div></label>
+<html lang="tr">
+<head>
+  {{ head_html | safe }}
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    /* Ek stil düzeltmeleri */
+    body{font-family:system-ui; background:#f8f9fa; padding:2rem;}
+    .container{max-width:760px; margin:0 auto; background:#fff; padding:2rem; border-radius:8px;}
+    .btn{background:#198754; color:#fff; padding:.75rem 1.5rem; border:none; border-radius:.375rem; cursor:pointer;}
+    .required-star{color:#dc3545;}
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Google Form Klonlayıcı</h1>
+    <form method="post" action="/">
+      <input type="text" name="url" placeholder="Google Form URL'si girin" required style="width:100%;padding:.5rem;">
+      <button class="btn" style="margin-top:1rem;">Formu Oluştur</button>
+    </form>
+    {% if error %}
+      <div style="margin-top:1rem;color:red;">{{ error }}</div>
+    {% endif %}
+    {% if form_data %}
+      <h2 style="margin-top:2rem;">{{ form_data.title | safe }}</h2>
+      {% if form_data.description %}
+        <div style="margin-bottom:1.5rem;">{{ form_data.description | safe }}</div>
+      {% endif %}
+      <form method="post" action="/submit">
+        {% for page in form_data.pages %}
+          <div class="page" style="margin-bottom:2rem;">
+            {% for q in page %}
+              {% if q.type in ['Başlık','Media'] %}
+                <div style="margin:1.5rem 0;">
+                  <div style="font-size:1.25rem;font-weight:600;">{{ q.text | safe }}</div>
+                  {% if q.description %}<div style="color:#6c757d;">{{ q.description | safe }}</div>{% endif %}
+                  {% if q.image_url %}<img src="{{ q.image_url }}" style="max-width:100%;margin-top:.5rem;">{% endif %}
+                </div>
+              {% else %}
+                <div style="margin-bottom:1.5rem;">
+                  <label style="font-weight:600;">{{ q.text | safe }} {% if q.required %}<span class="required-star">*</span>{% endif %}</label>
+                  {% if q.description %}<div style="color:#6c757d;font-size:0.9rem;">{{ q.description | safe }}</div>{% endif %}
+                  {% if q.type=='Kısa Yanıt' %}
+                    <input type="text" name="{{ q.entry_id }}" {% if q.required %}required{% endif %} style="width:100%;padding:.5rem;">
+                  {% elif q.type=='Paragraf' %}
+                    <textarea name="{{ q.entry_id }}" {% if q.required %}required{% endif %} style="width:100%;padding:.5rem;min-height:100px;"></textarea>
+                  {% elif q.type=='Çoktan Seçmeli' %}
+                    <div>
+                      {% for opt in q.options %}
+                        <label><input type="radio" name="{{ q.entry_id }}" value="{{ opt.text }}" {% if q.required %}required{% endif %}> {{ opt.text | safe }}</label><br>
+                      {% endfor %}
+                      {% if q.has_other %}
+                        <label><input type="radio" name="{{ q.entry_id }}" value="__other_option__"> Diğer:</label>
+                        <input type="text" name="{{ q.entry_id }}.other_option_response" style="padding:.4rem .6rem;">
+                      {% endif %}
+                    </div>
+                  {% elif q.type=='Onay Kutuları' %}
+                    <div>
+                      {% for opt in q.options %}
+                        <label><input type="checkbox" name="{{ q.entry_id }}" value="{{ opt.text }}"> {{ opt.text | safe }}</label><br>
+                      {% endfor %}
+                      {% if q.has_other %}
+                        <label><input type="checkbox" name="{{ q.entry_id }}" value="__other_option__"> Diğer:</label>
+                        <input type="text" name="{{ q.entry_id }}.other_option_response" style="padding:.4rem .6rem;">
+                      {% endif %}
+                    </div>
+                  {% elif q.type=='Açılır Liste' %}
+                    <select name="{{ q.entry_id }}" {% if q.required %}required{% endif %} style="width:100%;padding:.5rem;">
+                      <option value="" disabled selected>Seçin...</option>
+                      {% for opt in q.options %}<option>{{ opt | safe }}</option>{% endfor %}
+                    </select>
+                  {% elif q.type in ['Çoktan Seçmeli Tablosu','Onay Kutusu Tablosu'] %}
+                    <table style="width:100%;border-collapse:collapse;margin-top:.5rem;">
+                      <thead><tr><th></th>{% for col in q.cols %}<th style="border:1px solid #dee2e6;padding:.6rem;">{{ col }}</th>{% endfor %}</tr></thead>
+                      <tbody>
+                        {% for row in q.rows %}
+                        <tr><td style="border:1px solid #dee2e6;padding:.6rem;font-weight:600;">{{ row.text }}</td>
+                          {% for col in q.cols %}
+                          <td style="border:1px solid #dee2e6;padding:.6rem;text-align:center;">
+                            <input type="{{ 'checkbox' if 'Onay' in q.type else 'radio' }}" name="{{ row.entry_id }}" value="{{ col }}" {% if q.required %}required{% endif %}>
+                          </td>
+                          {% endfor %}</tr>
+                        {% endfor %}
+                      </tbody>
+                    </table>
+                  {% endif %}
+                </div>
+              {% endif %}
             {% endfor %}
-            {% if q.has_other %} <label class="other-option-label"><input type="radio" name="{{ q.entry_id }}" value="__other_option__"><span>Diğer:</span><input type="text" class="other-option-input" name="{{ q.entry_id }}.other_option_response"></label> {% endif %}
-            </div>
-            {% elif q.type == 'Onay Kutuları' %}
-            <div class="checkbox-group">
-            {% for opt in q.options %}
-            <label><input type="checkbox" name="{{ q.entry_id }}" value="{{ opt.text }}"><div class="option-content">{% if opt.image_url %}<div class="option-image-container"><img src="{{ opt.image_url }}" alt="{{ opt.text }}"></div>{% endif %}<span class="option-text">{{ opt.text | safe }}</span></div></label>
-            {% endfor %}
-            {% if q.has_other %} <label class="other-option-label"><input type="checkbox" name="{{ q.entry_id }}" value="__other_option__"><span>Diğer:</span><input type="text" class="other-option-input" name="{{ q.entry_id }}.other_option_response"></label>{% endif %}
-            </div>
-            {% elif q.type == 'Açılır Liste' %}
-            <select name="{{ q.entry_id }}" {% if q.required %}required{% endif %}><option value="" disabled selected>Seçin...</option>{% for opt in q.options %}<option value="{{ opt }}">{{ opt | safe }}</option>{% endfor %}</select>
-            {% elif q.type == 'Doğrusal Ölçek' %}
-            <div class="radio-group" style="flex-direction:row;justify-content:space-around;align-items:center;"><span>{{ q.labels[0] | safe }}</span>{% for opt in q.options %} <label style="flex-direction:column;align-items:center;"><span>{{ opt | safe }}</span><input type="radio" name="{{ q.entry_id }}" value="{{ opt }}" {% if q.required %}required{% endif %}></label> {% endfor %}<span>{{ q.labels[1] | safe }}</span></div>
-            {% elif q.type == 'Derecelendirme' %}
-            <div class="rating-group">{% for opt in q.options | reverse %} <input type="radio" id="star{{ opt }}-{{ q.entry_id }}" name="{{ q.entry_id }}" value="{{ opt }}" {% if q.required %}required{% endif %}><label for="star{{ opt }}-{{ q.entry_id }}">★</label> {% endfor %}</div>
-            {% elif q.type == 'Tarih' %} <input type="date" name="{{ q.entry_id }}" {% if q.required %}required{% endif %}>
-            {% elif q.type == 'Saat' %} <input type="time" name="{{ q.entry_id }}" {% if q.required %}required{% endif %}>
-            {% elif q.type in ['Çoktan Seçmeli Tablo','Onay Kutusu Tablosu'] %}
-            <table class="grid-table"><thead><tr><th></th>{% for col in q.cols %}<th>{{ col | safe }}</th>{% endfor %}</tr></thead><tbody>{% for row in q.rows %}<tr><td>{{ row.text | safe }}</td>{% for col in q.cols %}<td><input type="{{ 'checkbox' if 'Onay' in q.type else 'radio' }}" name="{{ row.entry_id }}" value="{{ col }}" {% if q.required %}required{% endif %}></td>{% endfor %}</tr>{% endfor %}</tbody></table>
-            {% endif %}
-        </div>
-        {% endif %}
-    {% endfor %}
-</div>
-{% endfor %}
-<div class="navigation-buttons">
-    <button type="button" class="btn btn-secondary" id="back-button" onclick="navigate(-1)" style="display: none;">Geri</button>
-    <button type="button" class="btn" id="next-button" onclick="navigate(1)">Sonraki</button>
-    <button type="submit" class="btn" id="submit-button" style="display: none;">Gönder ve Excel Olarak İndir</button>
-</div>
-</form>
-{% endif %}
-</div>
-<script>
-document.addEventListener('DOMContentLoaded', () => {
-    let radioMouseDownChecked;
-    document.body.addEventListener('mousedown', e => { if (e.target.tagName === 'INPUT' && e.target.type === 'radio') { radioMouseDownChecked = e.target.checked; }}, true);
-    document.body.addEventListener('click', e => { if (e.target.tagName === 'INPUT' && e.target.type === 'radio' && radioMouseDownChecked) { e.target.checked = false; }});
-    document.querySelectorAll('.other-option-input').forEach(textInput => {
-        const checkAssociatedControl = () => {
-            const associatedControl = textInput.closest('label').querySelector('input[type=radio], input[type=checkbox]');
-            if (associatedControl) { associatedControl.checked = true; }
-        };
-        textInput.addEventListener('input', checkAssociatedControl);
-        textInput.addEventListener('focus', checkAssociatedControl);
-    });
-    if(document.querySelectorAll('.page').length > 0) { showPage(0); }
-});
-let currentPageIndex = 0;
-const pages = document.querySelectorAll('.page');
-const backButton = document.getElementById('back-button');
-const nextButton = document.getElementById('next-button');
-const submitButton = document.getElementById('submit-button');
+          </div>
+        {% endfor %}
+        <button class="btn">Cevapları Excel İndir</button>
+      </form>
+    {% endif %}
+  </div>
+</body>
+</html>"""
 
-function updateButtons() {
-    if (!pages.length) return;
-    backButton.style.display = currentPageIndex > 0 ? 'inline-block' : 'none';
-    nextButton.style.display = currentPageIndex < pages.length - 1 ? 'inline-block' : 'none';
-    submitButton.style.display = currentPageIndex === pages.length - 1 ? 'inline-block' : 'none';
-}
-
-function showPage(index) {
-    pages.forEach((page, i) => { page.style.display = i === index ? 'block' : 'none'; });
-    updateButtons();
-    window.scrollTo(0, 0);
-}
-
-function validatePage(pageIndex) {
-    const currentPage = pages[pageIndex];
-    if (!currentPage) return true;
-    const form = document.getElementById('clone-form');
-    const requiredInputs = currentPage.querySelectorAll('[required]');
-    let allValid = true;
-    for (const input of requiredInputs) {
-        if (!input.checkValidity()) { allValid = false; break; }
-    }
-    if (!allValid && typeof form.reportValidity === 'function') { form.reportValidity(); }
-    return allValid;
-}
-
-function navigate(direction) {
-    if (direction > 0 && !validatePage(currentPageIndex)) { return; }
-    const newIndex = currentPageIndex + direction;
-    if (newIndex >= 0 && newIndex < pages.length) {
-        currentPageIndex = newIndex;
-        showPage(currentPageIndex);
-    }
-}
-</script>
-
-{% if raw_html %}
-<!-- Otomatik raw HTML indirme -->
-<script>
-(function(){
-  try {
-    const raw = {{ raw_html | tojson | safe }};
-    const blob = new Blob([raw], {type:'text/plain'});
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = 'form_raw_{{ timestamp }}.html.txt';
-    document.body.appendChild(a);
-    a.click();
-    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500);
-  } catch (e) {
-    console.warn("Raw HTML indirme başarısız:", e);
-  }
-})();
-</script>
-{% endif %}
-
-</body></html>
-"""
-
-@app.route('/', methods=['GET', 'POST'])
+@app.route('/', methods=['GET','POST'])
 def index():
-    if request.method == 'POST':
-        url = request.form.get('url', '').strip()
-        if not url or ("docs.google.com/forms" not in url and "forms.gle" not in url):
-            return render_template_string(HTML_TEMPLATE, error="Geçerli bir Google Form URL'si girin.")
+    if request.method=='POST':
+        url = request.form.get('url','').strip()
+        if not url or ('docs.google.com/forms' not in url and 'forms.gle' not in url):
+            return render_template_string(HTML_TEMPLATE, error='Geçerli Form URL girin', form_data=None, head_html='')
         result = analyze_google_form(url)
-        # Hata varsa
-        if "error" in result:
-            return render_template_string(HTML_TEMPLATE, error=result.get("error"), raw_html=result.get("raw_html", ""), form_data=None, timestamp=datetime.now().strftime("%Y%m%d_%H%M%S"))
-        form_data = result.get("form_data")
-        raw_html = result.get("raw_html", "")
+        if 'error' in result:
+            return render_template_string(HTML_TEMPLATE, error=result['error'], form_data=None, head_html=result.get('head_html',''))
+        form_data = result['form_data']
+        head_html = result['head_html']
         session['form_structure'] = form_data
-        return render_template_string(HTML_TEMPLATE, form_data=form_data, raw_html=raw_html, timestamp=datetime.now().strftime("%Y%m%d_%H%M%S"))
-    return render_template_string(HTML_TEMPLATE, form_data=None)
+        return render_template_string(HTML_TEMPLATE, error=None, form_data=form_data, head_html=head_html)
+    return render_template_string(HTML_TEMPLATE, error=None, form_data=None, head_html='')
 
 @app.route('/submit', methods=['POST'])
 def submit():
     form_structure = session.get('form_structure')
     if not form_structure:
-        return "Hata: Form yapısı bulunamadı. Lütfen formu ana sayfadan tekrar oluşturun.", 400
-
-    user_answers = request.form
+        return 'Hata: Form yapısı bulunamadı.', 400
+    answers = request.form
     results = []
-
-    all_questions = []
-    for page in form_structure.get('pages', []):
-        all_questions.extend(page)
-
-    for question in all_questions:
-        q_type = question.get('type')
-        if not q_type or q_type in ['Başlık', 'Media']:
-            continue
-
-        q_text_html = question.get('text') or ''
-        q_text_plain = BeautifulSoup(q_text_html, "html.parser").get_text(separator=" ", strip=True)
-        if not q_text_plain:
-            q_text_plain = f"[İsimsiz Soru - Tip: {q_type}]"
-
-        if 'Tablo' in q_type:
-            for row in question['rows']:
-                rid = row['entry_id']
-                row_label = f"{q_text_plain} [{row['text']}]"
-                if 'Onay' in q_type:
-                    answers = user_answers.getlist(rid)
-                    val = ', '.join(answers) if answers else "Boş Bırakıldı"
+    for page in form_structure.get('pages',[]):
+        for q in page:
+            if q.get('type') in ['Başlık','Media']:
+                continue
+            eid = q.get('entry_id')
+            if not eid: continue
+            ans = None
+            if q['type']=='Onay Kutuları':
+                vals = answers.getlist(eid)
+                final=[]
+                if '__other_option__' in vals:
+                    vals.remove('__other_option__')
+                    oth = answers.get(f"{eid}.other_option_response', '').strip()
+                    final.append(f'Diğer: {oth}' if oth else 'Diğer')
+                final+=vals
+                ans = ', '.join(final) if final else 'Boş'
+            elif q['type']=='Çoktan Seçmeli':
+                val=answers.get(eid)
+                if val=='__other_option__':
+                    oth=answers.get(f"{eid}.other_option_response", '').strip()
+                    ans=f'Diğer: {oth}' if oth else 'Diğer'
                 else:
-                    val = user_answers.get(rid, "Boş Bırakıldı")
-                results.append({"Soru": row_label, "Soru Tipi": q_type, "Cevap": val})
-            continue
-
-        entry = question.get('entry_id')
-        if not entry:
-            continue
-
-        answer_str = "Boş Bırakıldı"
-        if q_type == 'Onay Kutuları':
-            answers = user_answers.getlist(entry)
-            final = []
-            if "__other_option__" in answers:
-                answers.remove("__other_option__")
-                other_txt = user_answers.get(f"{entry}.other_option_response", "").strip()
-                final.append(f"Diğer: {other_txt}" if other_txt else "Diğer (belirtilmemiş)")
-            final.extend(answers)
-            if final:
-                answer_str = ', '.join(final)
-        elif q_type == 'Çoktan Seçmeli':
-            ans = user_answers.get(entry)
-            if ans == "__other_option__":
-                other_txt = user_answers.get(f"{entry}.other_option_response", "").strip()
-                answer_str = f"Diğer: {other_txt}" if other_txt else "Diğer (belirtilmemiş)"
-            elif ans:
-                answer_str = ans
-        else:
-            raw_answer = user_answers.get(entry, "")
-            answer_str = raw_answer if raw_answer.strip() != "" else "Boş Bırakıldı"
-
-        results.append({"Soru": q_text_plain, "Soru Tipi": q_type, "Cevap": answer_str})
-
+                    ans=val or 'Boş'
+            else:
+                ans = answers.get(eid, '').strip() or 'Boş'
+            text = BeautifulSoup(q['text'], 'html.parser').get_text(separator=' ', strip=True)
+            results.append({'Soru': text, 'Cevap': ans})
     df = pd.DataFrame(results)
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        sheet = 'Form Cevaplari'
-        df.to_excel(writer, index=False, sheet_name=sheet)
-        ws = writer.sheets[sheet]
-        for i, col in enumerate(df.columns):
-            col_width = max(df[col].astype(str).map(len).max(), len(col))
-            ws.column_dimensions[chr(65 + i)].width = min(col_width + 2, 70)
-    output.seek(0)
-    session.pop('form_structure', None)
-    return send_file(output,
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='Cevaplar')
+    buf.seek(0)
+    return send_file(buf,
                      mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                      as_attachment=True,
                      download_name='form_cevaplari.xlsx')
 
-if __name__ == '__main__':
+if __name__=='__main__':
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
